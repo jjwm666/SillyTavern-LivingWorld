@@ -1,0 +1,13 @@
+{
+  "display_name": "Living World · 万象世界引擎",
+  "loading_order": 20,
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Living World contributors",
+  "version": "0.1.0",
+  "license": "MIT",
+  "homePage": "https://github.com/jjwm666/SillyTavern-LivingWorld",
+  "auto_update": true,
+  "minimum_client_version": "1.12.0",
+  "generate_interceptor": "livingWorldGenerateInterceptor"
+}

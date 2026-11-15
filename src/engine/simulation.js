@@ -1,0 +1,585 @@
+import { EVENT_STAGES, FACTION_ACTIONS, NPC_ACTIONS } from './constants.js';
+import { heuristicProposal } from './director.js';
+import { isSuccess, progressFromOutcome, rollCheck, SeededRandom } from './rng.js';
+import { addLog, addMemory, changeRelation, getFactionStatus } from './state.js';
+import {
+  asArray, average, byId, clamp, deepClone, hashString, integer,
+  relationLabel, stageFor, text,
+} from './utils.js';
+
+function ensureNpcRelationship(npc, targetId) {
+  if (!npc.relationships[targetId]) npc.relationships[targetId] = { trust: 0, affection: 0, fear: 0, debt: 0 };
+  return npc.relationships[targetId];
+}
+
+function changeNpcTrust(source, target, amount) {
+  if (!source || !target) return;
+  for (const [npc, other] of [[source, target], [target, source]]) {
+    const relation = ensureNpcRelationship(npc, other.id);
+    relation.trust = integer(relation.trust + amount, 0, -100, 100);
+  }
+}
+
+function updateMood(npc, valenceDelta, arousalDelta = 0) {
+  npc.mood.valence = integer(npc.mood.valence + valenceDelta, 0, -10, 10);
+  npc.mood.arousal = integer(npc.mood.arousal + arousalDelta, 0, 0, 10);
+  npc.mood.label = npc.mood.valence <= -6 ? '悲观'
+    : npc.mood.valence <= -2 ? '焦虑'
+      : npc.mood.valence >= 6 ? '振奋'
+        : npc.mood.arousal >= 7 ? '警惕' : '平静';
+}
+
+function ensurePlan(npc, round, intent) {
+  if (!npc.plan || npc.plan.stage === '已完成' || npc.plan.stage === '已失败') {
+    npc.plan = {
+      id: `plan_${npc.id}_${round}`,
+      goal: text(intent.goal || npc.goals[0]?.description, 240, '改善自身处境'),
+      actionType: intent.action,
+      targetId: text(intent.targetId, 100),
+      targetRegionId: text(intent.regionId, 100),
+      stage: '筹备',
+      progress: 0,
+      requiredProgress: 3 + Math.floor(npc.personality.ambition / 3),
+      stalls: 0,
+      createdRound: round,
+      lastRound: round,
+    };
+  }
+  return npc.plan;
+}
+
+function advancePlan(npc, outcome, state) {
+  if (!npc.plan) return;
+  const plan = npc.plan;
+  const delta = progressFromOutcome(outcome);
+  if (delta > 0) {
+    plan.progress += delta;
+    plan.stalls = 0;
+  } else {
+    plan.stalls += delta < 0 ? 2 : 1;
+  }
+  plan.lastRound = state.round;
+  const ratio = plan.progress / plan.requiredProgress;
+  plan.stage = plan.progress >= plan.requiredProgress ? '已完成'
+    : plan.stalls >= 3 ? '已失败'
+      : ratio >= 0.66 ? '关键' : ratio >= 0.25 ? '执行' : '筹备';
+  if (plan.stage === '已完成') {
+    const goal = npc.goals.find((item) => item.description === plan.goal) || npc.goals[0];
+    if (goal) goal.progress = integer(goal.progress + 35, 0, 0, 100);
+    updateMood(npc, 2, -1);
+    addLog(state, {
+      type: 'npc', actorId: npc.id, regionId: npc.locationId,
+      title: `${npc.name}完成了一个长期计划`,
+      detail: `“${plan.goal}”经过多轮推进后完成，后续目标将重新评估。`,
+    });
+  } else if (plan.stage === '已失败') {
+    updateMood(npc, -2, 1);
+    addLog(state, {
+      type: 'npc', actorId: npc.id, regionId: npc.locationId,
+      title: `${npc.name}的计划受挫`,
+      detail: `“${plan.goal}”连续停滞，原有方案被迫放弃。`,
+    });
+  }
+}
+
+function createRumor(state, { content, type = 'rumor', sourceRegionId, intensity = 2, truth = '' }) {
+  const regionId = byId(state.regions, sourceRegionId) ? sourceRegionId : state.player.regionId;
+  const rumor = {
+    id: `rumor_${state.round}_${hashString(`${content}:${state.rumors.length}`)}`,
+    content: text(content, 500, '一则没有来源的消息正在传播'),
+    type: ['announcement', 'report', 'rumor', 'sentiment'].includes(type) ? type : 'rumor',
+    truth: text(truth, 500),
+    sourceRegionId: regionId,
+    intensity: integer(intensity, 2, 1, 4),
+    locations: [{ regionId, strength: integer(intensity, 2, 1, 4), arrivedRound: state.round }],
+    createdRound: state.round,
+    lastSpreadRound: state.round,
+    active: true,
+  };
+  state.rumors.push(rumor);
+  state.rumors = state.rumors.slice(-100);
+  return rumor;
+}
+
+function sanitizeNpcIntent(state, npc, intent, fallback) {
+  const source = intent && typeof intent === 'object' ? intent : fallback;
+  return {
+    npcId: npc.id,
+    action: NPC_ACTIONS.includes(source?.action) ? source.action : 'pursue_goal',
+    targetId: text(source?.targetId, 100),
+    regionId: text(source?.regionId, 100),
+    goal: text(source?.goal, 240, npc.goals[0]?.description || '改善自身处境'),
+    summary: text(source?.summary, 400, '处理自己的事务'),
+    secret: source?.secret === true,
+  };
+}
+
+function applyNpcIntent(state, npc, intent, check) {
+  const region = byId(state.regions, npc.locationId);
+  if (!region) return;
+  const targetNpc = byId(state.npcs, intent.targetId);
+  const targetFaction = byId(state.factions, intent.targetId) || byId(state.factions, targetNpc?.factionId);
+  const ownFaction = byId(state.factions, npc.factionId);
+  const plan = ensurePlan(npc, state.round, intent);
+  let attribute = 'cunning';
+  let modifier = Math.floor(npc.attributes.cunning / 2) + Math.floor(npc.personality.ambition / 4);
+  let difficulty = 11;
+  let detail = '';
+  let title = `${npc.name}：${intent.summary}`;
+  let publicEvent = !intent.secret;
+  let targetRegion = byId(state.regions, intent.regionId);
+
+  if (intent.action === 'travel') {
+    const edge = region.neighbors.find((item) => item.targetId === intent.regionId);
+    if (!targetRegion || !edge) {
+      npc.lastAction = `无法直接前往${targetRegion?.name || '未知地点'}，改为处理当地事务`;
+      addMemory(npc, state.round, '发现目标地点与当前位置没有直接路线。', -1);
+      addLog(state, { type: 'npc', actorId: npc.id, regionId: region.id, title: `${npc.name}的旅行计划受路线限制`, detail: npc.lastAction, public: false });
+      return;
+    }
+    attribute = 'force';
+    modifier = Math.floor(npc.attributes.force / 2) + Math.floor(npc.personality.caution / 4);
+    difficulty = 7 + edge.distance + Math.floor(targetRegion.danger / 3);
+  } else if (['aid', 'confront'].includes(intent.action)) {
+    if (!targetNpc || targetNpc.locationId !== npc.locationId || !targetNpc.alive) {
+      npc.lastAction = '目标不在同一区域，行动取消';
+      addLog(state, { type: 'npc', actorId: npc.id, regionId: region.id, title: `${npc.name}未能接触行动目标`, detail: npc.lastAction, public: false });
+      return;
+    }
+  }
+
+  if (intent.action === 'trade') {
+    attribute = 'influence';
+    modifier = Math.floor(npc.attributes.influence / 2) + Math.floor(npc.attributes.resources / 3);
+    difficulty = 9 + Math.floor(state.economy.priceIndex / 60);
+  } else if (intent.action === 'aid') {
+    attribute = 'empathy';
+    modifier = Math.floor(npc.attributes.empathy / 2) + Math.floor(npc.personality.empathy / 3);
+    difficulty = 10;
+  } else if (intent.action === 'scheme') {
+    attribute = 'cunning';
+    modifier += Math.floor(npc.personality.caution / 4);
+    difficulty = 11 + Math.floor((targetFaction?.resources.influence || targetNpc?.attributes.influence || 4) / 3);
+  } else if (intent.action === 'recruit') {
+    attribute = 'influence';
+    modifier = Math.floor(npc.attributes.influence / 2) + Math.floor((ownFaction?.stability || 40) / 30);
+    difficulty = 12;
+  } else if (intent.action === 'confront') {
+    attribute = 'force';
+    modifier = Math.floor(npc.attributes.force / 2) + Math.floor(npc.mood.arousal / 4);
+    difficulty = 9 + Math.floor(targetNpc.attributes.force / 2);
+  } else if (intent.action === 'rest') {
+    attribute = 'empathy';
+    modifier = 2;
+    difficulty = 7;
+  } else if (intent.action === 'spread_rumor') {
+    attribute = 'influence';
+    modifier = Math.floor(npc.attributes.influence / 2) + Math.floor(npc.attributes.cunning / 3);
+    difficulty = 11;
+  }
+
+  const roll = check({
+    actorId: npc.id, action: intent.action, modifier, difficulty,
+    reason: `${npc.name}尝试${intent.summary}`, regionId: region.id,
+  });
+  const success = isSuccess(roll.outcome);
+  const critical = roll.outcome === 'critical_success';
+  const criticalFailure = roll.outcome === 'critical_failure';
+  npc.lastAction = `${intent.summary}（${roll.formula}，${roll.total}）`;
+
+  if (intent.action === 'travel') {
+    if (success) {
+      npc.locationId = targetRegion.id;
+      detail = `${npc.name}沿${region.name}与${targetRegion.name}之间的路线抵达目的地。`;
+      addMemory(npc, state.round, `从${region.name}抵达${targetRegion.name}。`, 0);
+    } else {
+      npc.needs.safety = integer(npc.needs.safety - 1, 0, 0, 10);
+      detail = `${npc.name}未能在本轮完成前往${targetRegion.name}的旅行。`;
+    }
+  } else if (intent.action === 'investigate') {
+    if (success) {
+      const secretOwner = state.npcs.find((other) => other.id !== npc.id && other.locationId === npc.locationId && other.secrets.length);
+      const learned = secretOwner?.secrets[0] || targetNpc?.secrets[0] || `${region.name}的危险为 ${region.danger}，控制势力为${byId(state.factions, region.controlFactionId)?.name || '无'}。`;
+      addMemory(npc, state.round, `调查所得：${learned}`, 1);
+      detail = `${npc.name}获得了新的私人信息，但该信息尚未自动公开。`;
+      if (critical && secretOwner) npc.knownRumorIds = [...new Set([...npc.knownRumorIds, ...state.rumors.filter((rumor) => rumor.sourceRegionId === region.id).map((rumor) => rumor.id)])];
+    } else {
+      detail = `${npc.name}的调查没有获得可靠信息。`;
+      addMemory(npc, state.round, '一次调查没有取得进展。', -1);
+    }
+  } else if (intent.action === 'trade') {
+    if (success) {
+      const gain = critical ? 2 : 1;
+      npc.attributes.resources = integer(npc.attributes.resources + gain, 0, 0, 10);
+      npc.needs.wealth = integer(npc.needs.wealth + 2, 0, 0, 10);
+      region.prosperity = integer(region.prosperity + (critical ? 3 : 1), 0, 0, 100);
+      if (ownFaction) ownFaction.resources.wealth = integer(ownFaction.resources.wealth + 2, 0, 0, 100);
+      detail = `${npc.name}完成交易，改善了个人资源并带动${region.name}的局部市场。`;
+    } else {
+      npc.needs.wealth = integer(npc.needs.wealth - 1, 0, 0, 10);
+      if (criticalFailure) npc.attributes.resources = integer(npc.attributes.resources - 1, 0, 0, 10);
+      detail = `${npc.name}的交易未能改善处境${criticalFailure ? '，还损失了一部分资源' : ''}。`;
+    }
+  } else if (intent.action === 'aid') {
+    if (success) {
+      changeNpcTrust(npc, targetNpc, critical ? 14 : 8);
+      targetNpc.needs.safety = integer(targetNpc.needs.safety + 1, 0, 0, 10);
+      npc.needs.belonging = integer(npc.needs.belonging + 2, 0, 0, 10);
+      addMemory(targetNpc, state.round, `${npc.name}在需要时提供了帮助。`, 2);
+      detail = `${npc.name}帮助了${targetNpc.name}，双方信任上升。`;
+    } else {
+      changeNpcTrust(npc, targetNpc, -2);
+      detail = `${npc.name}的援助没有取得预期效果，双方略显尴尬。`;
+    }
+  } else if (intent.action === 'scheme') {
+    if (success) {
+      if (targetFaction) {
+        targetFaction.stability = integer(targetFaction.stability - (critical ? 8 : 4), 0, 0, 100);
+        detail = `${npc.name}的暗中谋划削弱了${targetFaction.name}的稳定性。`;
+      } else if (targetNpc) {
+        targetNpc.attributes.resources = integer(targetNpc.attributes.resources - 1, 0, 0, 10);
+        detail = `${npc.name}的谋划使${targetNpc.name}损失了部分资源。`;
+      } else {
+        region.unrest = integer(region.unrest + 3, 0, 0, 100);
+        detail = `${npc.name}的秘密行动加剧了${region.name}的不安定。`;
+      }
+      publicEvent = false;
+    } else {
+      publicEvent = true;
+      if (targetFaction && ownFaction) changeRelation(state.factions, ownFaction.id, targetFaction.id, -8, `${npc.name}的谋划暴露`);
+      if (targetNpc) {
+        changeNpcTrust(npc, targetNpc, -12);
+        addMemory(targetNpc, state.round, `察觉${npc.name}可能正在针对自己。`, -3);
+      }
+      createRumor(state, { content: `${npc.name}似乎正在暗中策划不利于他人的行动。`, sourceRegionId: region.id, intensity: 2 });
+      detail = `${npc.name}的秘密谋划暴露，相关目标开始提防。`;
+    }
+  } else if (intent.action === 'recruit') {
+    if (success && ownFaction) {
+      ownFaction.resources.manpower = integer(ownFaction.resources.manpower + (critical ? 7 : 4), 0, 0, 100);
+      ownFaction.resources.influence = integer(ownFaction.resources.influence + 1, 0, 0, 100);
+      detail = `${npc.name}为${ownFaction.name}招募了新的支持者。`;
+    } else {
+      detail = `${npc.name}的招募没有获得足够响应。`;
+    }
+  } else if (intent.action === 'confront') {
+    changeNpcTrust(npc, targetNpc, success ? -10 : -16);
+    ensureNpcRelationship(targetNpc, npc.id).fear = integer(ensureNpcRelationship(targetNpc, npc.id).fear + (success ? 10 : 3), 0, 0, 100);
+    updateMood(targetNpc, -2, 2);
+    region.unrest = integer(region.unrest + (criticalFailure ? 5 : 2), 0, 0, 100);
+    detail = success ? `${npc.name}在对峙中压制了${targetNpc.name}，双方关系恶化。` : `${npc.name}未能在对峙中压住${targetNpc.name}，冲突反而扩大。`;
+  } else if (intent.action === 'spread_rumor') {
+    const rumor = createRumor(state, {
+      content: intent.summary,
+      sourceRegionId: region.id,
+      intensity: success ? (critical ? 4 : 3) : 1,
+      type: 'rumor',
+    });
+    for (const other of state.npcs.filter((item) => item.locationId === region.id)) other.knownRumorIds.push(rumor.id);
+    detail = success ? `${npc.name}让一则风声在${region.name}扩散。` : `${npc.name}传播的风声没有获得多少关注。`;
+  } else if (intent.action === 'rest') {
+    if (success) {
+      npc.needs.safety = integer(npc.needs.safety + 2, 0, 0, 10);
+      npc.needs.belonging = integer(npc.needs.belonging + 1, 0, 0, 10);
+      updateMood(npc, 1, -2);
+      detail = `${npc.name}休整并恢复了判断力。`;
+    } else detail = `${npc.name}被日常事务打断，未能充分休整。`;
+  } else {
+    detail = success ? `${npc.name}向“${plan.goal}”迈进了一步。` : `${npc.name}推进“${plan.goal}”时遇到阻碍。`;
+  }
+
+  if (intent.action === 'pursue_goal' || plan.actionType === intent.action) advancePlan(npc, roll.outcome, state);
+  updateMood(npc, success ? 1 : -1, success ? 0 : 1);
+  npc.schedule.current = intent.summary;
+  npc.schedule.next = plan.stage === '已完成' || plan.stage === '已失败' ? '重新评估目标' : `继续“${plan.goal}”`;
+  addMemory(npc, state.round, detail, success ? 1 : -1);
+  addLog(state, {
+    type: 'npc', actorId: npc.id, regionId: npc.locationId,
+    title, detail, diceRollId: roll.id, public: publicEvent,
+  });
+}
+
+function sanitizeFactionIntent(faction, intent, fallback) {
+  const source = intent && typeof intent === 'object' ? intent : fallback;
+  return {
+    factionId: faction.id,
+    action: FACTION_ACTIONS.includes(source?.action) ? source.action : 'consolidate',
+    targetFactionId: text(source?.targetFactionId, 100),
+    regionId: text(source?.regionId, 100),
+    summary: text(source?.summary, 400, faction.goal),
+  };
+}
+
+function applyFactionIntent(state, faction, intent, check) {
+  const target = byId(state.factions, intent.targetFactionId);
+  const controlled = state.regions.filter((region) => region.controlFactionId === faction.id);
+  const home = byId(state.regions, faction.homeRegionId) || controlled[0] || state.regions[0];
+  let difficulty = 11;
+  let modifier = Math.floor(faction.resources.influence / 25) + Math.floor(faction.stability / 35);
+  if (intent.action === 'expand') {
+    const targetRegion = byId(state.regions, intent.regionId);
+    const connected = controlled.some((region) => region.neighbors.some((edge) => edge.targetId === intent.regionId));
+    if (!targetRegion || targetRegion.controlFactionId === faction.id || !connected) {
+      addLog(state, { type: 'faction', regionId: home.id, title: `${faction.name}的扩张意图不符合地图条件`, detail: '目标地区不存在、已被控制，或不与现有控制区相邻。', public: false });
+      return;
+    }
+    modifier += Math.floor(faction.resources.manpower / 30);
+    difficulty = 11 + Math.floor(targetRegion.danger / 3);
+    const roll = check({ actorId: faction.id, action: 'expand', modifier, difficulty, reason: `${faction.name}试图控制${targetRegion.name}` });
+    if (isSuccess(roll.outcome)) {
+      const former = byId(state.factions, targetRegion.controlFactionId);
+      targetRegion.controlFactionId = faction.id;
+      targetRegion.unrest = integer(targetRegion.unrest + 8, 0, 0, 100);
+      faction.resources.influence = integer(faction.resources.influence + 4, 0, 0, 100);
+      if (former) {
+        former.resources.influence = integer(former.resources.influence - 5, 0, 0, 100);
+        changeRelation(state.factions, faction.id, former.id, -15, `争夺${targetRegion.name}控制权`);
+      }
+      addLog(state, { type: 'faction', regionId: targetRegion.id, title: `${targetRegion.name}的控制权易主`, detail: `${faction.name}取得控制权${former ? `，原控制者${former.name}的影响力下降` : ''}。`, diceRollId: roll.id });
+    } else {
+      faction.resources.manpower = integer(faction.resources.manpower - 3, 0, 0, 100);
+      targetRegion.unrest = integer(targetRegion.unrest + 4, 0, 0, 100);
+      addLog(state, { type: 'faction', regionId: targetRegion.id, title: `${faction.name}在${targetRegion.name}扩张受挫`, detail: '行动未能改变控制权，并造成一定人力损耗。', diceRollId: roll.id });
+    }
+    return;
+  }
+
+  const roll = check({ actorId: faction.id, action: intent.action, modifier, difficulty, reason: intent.summary });
+  const success = isSuccess(roll.outcome);
+  let title = `${faction.name}：${intent.summary}`;
+  let detail = '';
+  if (intent.action === 'trade' && target) {
+    if (success) {
+      faction.resources.wealth = integer(faction.resources.wealth + 5, 0, 0, 100);
+      target.resources.wealth = integer(target.resources.wealth + 4, 0, 0, 100);
+      changeRelation(state.factions, faction.id, target.id, 6, '互利贸易');
+      detail = `${faction.name}与${target.name}完成贸易，双方财富与关系改善。`;
+    } else {
+      changeRelation(state.factions, faction.id, target.id, -2, '贸易分歧');
+      detail = '贸易谈判没有达成协议，双方对条件存有分歧。';
+    }
+  } else if (intent.action === 'improve_relations' && target) {
+    changeRelation(state.factions, faction.id, target.id, success ? 10 : -3, success ? '主动外交与利益交换' : '外交接触失败');
+    detail = success ? `${faction.name}与${target.name}的关系转为${relationLabel(faction.relations[target.id].value)}。` : `${faction.name}的外交接触引起${target.name}疑虑。`;
+  } else if (intent.action === 'pressure' && target) {
+    if (success) {
+      target.stability = integer(target.stability - 6, 0, 0, 100);
+      faction.resources.influence = integer(faction.resources.influence + 2, 0, 0, 100);
+    }
+    changeRelation(state.factions, faction.id, target.id, -9, `${faction.name}施加压力`);
+    detail = success ? `${target.name}在压力下稳定性下降。` : `${target.name}顶住压力，但双方关系继续恶化。`;
+  } else {
+    if (success) {
+      faction.stability = integer(faction.stability + 6, 0, 0, 100);
+      faction.resources.manpower = integer(faction.resources.manpower + 2, 0, 0, 100);
+      home.unrest = integer(home.unrest - 3, 0, 0, 100);
+      detail = `${faction.name}恢复内部秩序并巩固了${home.name}的基本盘。`;
+    } else {
+      faction.stability = integer(faction.stability - 2, 0, 0, 100);
+      detail = `${faction.name}的内部整顿遇到阻力。`;
+    }
+  }
+  addLog(state, { type: 'faction', regionId: home.id, title, detail, diceRollId: roll.id });
+}
+
+function applyExistingEvent(state, event, check) {
+  if (event.status !== 'active') return;
+  const previousStage = event.stage;
+  const region = byId(state.regions, event.regionId) || state.regions[0];
+  const actors = event.actorIds.map((id) => byId(state.npcs, id)).filter(Boolean);
+  const factions = event.factionIds.map((id) => byId(state.factions, id)).filter(Boolean);
+  const modifier = Math.floor(average(actors.map((npc) => npc.attributes.cunning), 3) / 2)
+    + Math.floor(average(factions.map((faction) => faction.stability), 50) / 35)
+    - Math.floor(region.danger / 4);
+  const difficulty = 10 + event.level;
+  const roll = check({ actorId: event.id, action: 'event_progress', modifier, difficulty, reason: `${event.name}进入阶段判定` });
+  const delta = progressFromOutcome(roll.outcome);
+  event.progress = Math.max(0, event.progress + delta);
+  event.stalls = delta > 0 ? 0 : event.stalls + (delta < 0 ? 2 : 1);
+  event.lastRound = state.round;
+  if (event.progress >= event.requiredProgress) event.status = 'completed';
+  if (event.stalls >= 3) event.status = 'failed';
+  event.stage = stageFor(event);
+  event.history.push(`第${state.round}轮：${roll.formula}=${roll.total}，${event.stage}`);
+  event.history = event.history.slice(-30);
+  if (event.status === 'completed') {
+    if (event.type === 'conflict') {
+      region.unrest = integer(region.unrest + 12 + event.level * 2, 0, 0, 100);
+      region.prosperity = integer(region.prosperity - event.level * 3, 0, 0, 100);
+    } else {
+      region.prosperity = integer(region.prosperity + 6 + event.level, 0, 0, 100);
+      region.unrest = integer(region.unrest - 5, 0, 0, 100);
+    }
+  }
+  if (event.status === 'failed' && event.type === 'conflict') region.unrest = integer(region.unrest - 3, 0, 0, 100);
+  if (previousStage !== event.stage || delta !== 0) {
+    addLog(state, {
+      type: 'event', regionId: region.id,
+      title: `${event.name}：${event.stage}`,
+      detail: `${roll.formula}，判定 ${roll.total}。${delta > 0 ? '事件取得实质进展。' : delta < 0 ? '事件出现倒退。' : '事件暂时停滞。'}`,
+      diceRollId: roll.id,
+    });
+  }
+}
+
+function proposeEvents(state, proposals, check) {
+  for (const proposal of asArray(proposals).slice(0, 2)) {
+    const region = byId(state.regions, proposal?.regionId) || [...state.regions].sort((a, b) => b.unrest - a.unrest)[0];
+    const name = text(proposal?.name, 160, `${region.name}的突发变故`);
+    const roll = check({ actorId: 'world', action: 'event_emergence', modifier: Math.floor(region.unrest / 30), difficulty: 11, reason: `${name}是否形成持续事件` });
+    if (!isSuccess(roll.outcome)) {
+      addLog(state, { type: 'event', regionId: region.id, title: `${name}的苗头暂时消散`, detail: '形成事件的判定未通过，本轮只留下轻微迹象。', diceRollId: roll.id, public: false });
+      continue;
+    }
+    const type = proposal?.type === 'progress' ? 'progress' : 'conflict';
+    const event = {
+      id: `event_${state.round}_${hashString(`${name}:${state.events.length}`)}`,
+      name,
+      description: text(proposal?.description, 600, '多种因素汇合为新的持续事件。'),
+      type,
+      level: integer(proposal?.level, 2, 1, 4),
+      stage: EVENT_STAGES[type][0],
+      status: 'active',
+      progress: 0,
+      requiredProgress: integer(proposal?.requiredProgress, 4 + integer(proposal?.level, 2, 1, 4) * 2, 2, 30),
+      stalls: 0,
+      regionId: region.id,
+      actorIds: asArray(proposal?.actorIds).filter((id) => byId(state.npcs, id)),
+      factionIds: asArray(proposal?.factionIds).filter((id) => byId(state.factions, id)),
+      createdRound: state.round,
+      lastRound: state.round,
+      history: [`第${state.round}轮形成，${roll.formula}=${roll.total}`],
+    };
+    state.events.push(event);
+    state.events = state.events.slice(-80);
+    addLog(state, { type: 'event', regionId: region.id, title: `新事件：${name}`, detail: event.description, diceRollId: roll.id });
+  }
+}
+
+function spreadRumors(state, check, rng) {
+  for (const rumor of state.rumors.filter((item) => item.active)) {
+    const roll = check({ actorId: rumor.id, action: 'rumor_spread', modifier: rumor.intensity - 2, difficulty: 12, reason: '风声沿地图传播判定' });
+    let spread = false;
+    if (isSuccess(roll.outcome)) {
+      const origins = [...rumor.locations];
+      for (const origin of origins) {
+        const region = byId(state.regions, origin.regionId);
+        const candidates = (region?.neighbors || []).filter((edge) => !rumor.locations.some((location) => location.regionId === edge.targetId));
+        if (!candidates.length || origin.strength <= 0) continue;
+        const edge = rng.pick(candidates);
+        rumor.locations.push({ regionId: edge.targetId, strength: Math.max(1, origin.strength - 1), arrivedRound: state.round });
+        spread = true;
+      }
+    }
+    if (spread) {
+      rumor.lastSpreadRound = state.round;
+      const arrived = rumor.locations.filter((location) => location.arrivedRound === state.round).map((location) => byId(state.regions, location.regionId)?.name).filter(Boolean);
+      addLog(state, { type: 'rumor', title: '风声传到新的地区', detail: `“${rumor.content}”传至${arrived.join('、')}。`, diceRollId: roll.id });
+    } else {
+      for (const location of rumor.locations) {
+        if (state.round - location.arrivedRound > 0 && state.round % 2 === 0) location.strength = Math.max(0, location.strength - 1);
+      }
+    }
+    for (const npc of state.npcs) {
+      if (rumor.locations.some((location) => location.regionId === npc.locationId && location.strength > 0) && !npc.knownRumorIds.includes(rumor.id)) npc.knownRumorIds.push(rumor.id);
+    }
+    if (!rumor.locations.some((location) => location.strength > 0)) rumor.active = false;
+  }
+  state.rumors = state.rumors.filter((rumor) => rumor.active || state.round - rumor.createdRound <= 8).slice(-100);
+}
+
+function settleEconomy(state, proposal, check) {
+  const prosperity = average(state.regions.map((region) => region.prosperity), 50);
+  const unrest = average(state.regions.map((region) => region.unrest), 20);
+  const roll = check({ actorId: 'world', action: 'economy', modifier: Math.floor(prosperity / 30) - Math.floor(unrest / 35), difficulty: 10, reason: '整体经济气候变化' });
+  const success = isSuccess(roll.outcome);
+  state.economy.priceIndex = integer(state.economy.priceIndex + (success ? -2 : 3) + (roll.outcome.startsWith('critical') ? (success ? -2 : 2) : 0), 100, 20, 400);
+  state.economy.climate = unrest >= 65 ? '动荡' : prosperity >= 72 && state.economy.priceIndex < 140 ? '繁荣' : prosperity < 40 || state.economy.priceIndex > 155 ? '衰退' : '平稳';
+  state.economy.lastSignal = text(proposal.economicSignal, 500) || (success ? '交易与生产保持稳定，部分价格压力缓解。' : '需求与供应出现波动，市场参与者转向谨慎。');
+  addLog(state, { type: 'economy', title: `经济气候：${state.economy.climate}`, detail: `${state.economy.lastSignal} 价格指数 ${state.economy.priceIndex}。`, diceRollId: roll.id });
+}
+
+function settleBackground(state, proposal, check) {
+  let totalPopulation = 0;
+  let activeRegions = 0;
+  for (const region of state.regions) {
+    const roll = check({ actorId: region.id, action: 'background', modifier: Math.floor(region.prosperity / 30) - Math.floor(region.unrest / 30), difficulty: 10, reason: `${region.name}背景人群结算` });
+    const success = isSuccess(roll.outcome);
+    const populationChange = success ? 1.01 + (roll.outcome === 'critical_success' ? 0.01 : 0) : 0.995 - (roll.outcome === 'critical_failure' ? 0.01 : 0);
+    region.population = Math.max(0, Math.round(region.population * populationChange));
+    region.prosperity = integer(region.prosperity + (success ? 1 : -1), 0, 0, 100);
+    region.unrest = integer(region.unrest + (success ? -1 : 1), 0, 0, 100);
+    totalPopulation += region.population;
+    if (success) activeRegions += 1;
+    if (roll.outcome === 'critical_failure') {
+      addLog(state, { type: 'region', regionId: region.id, title: `${region.name}民生承压`, detail: '背景人群的生产与生活受到明显冲击，人口与繁荣下降。', diceRollId: roll.id });
+    }
+  }
+  state.background.simulatedPeople = totalPopulation;
+  state.background.lastSettlement = text(proposal.backgroundSignal, 700) || `${activeRegions}/${state.regions.length} 个地区的背景生活总体稳定，其余地区出现不同程度压力。`;
+}
+
+export function evolveWorld(previousState, proposal = {}, options = {}) {
+  const state = deepClone(previousState);
+  state.round += 1;
+  state.calendar.day += 1;
+  if (state.calendar.day > 30) {
+    state.calendar.day = 1;
+    state.calendar.month += 1;
+    if (state.calendar.month > 12) {
+      state.calendar.month = 1;
+      state.calendar.year += 1;
+    }
+  }
+  state.calendar.turnLabel = `第 ${state.round} 轮 · ${state.calendar.year}年${state.calendar.month}月${state.calendar.day}日`;
+  const rng = new SeededRandom(`${state.seed}:round:${state.round}`);
+  let sequence = 0;
+  const check = (input) => {
+    const roll = rollCheck(rng, { ...input, round: state.round, sequence: sequence += 1 });
+    state.dice.push(roll);
+    return roll;
+  };
+  const fallback = heuristicProposal(state);
+  const safeProposal = proposal && typeof proposal === 'object' ? proposal : {};
+  const providedNpcIntents = asArray(safeProposal.npcIntents);
+  const coreNpcs = state.npcs.filter((npc) => npc.core && npc.alive);
+  for (const npc of coreNpcs) {
+    const proposed = providedNpcIntents.find((intent) => intent?.npcId === npc.id);
+    const backup = fallback.npcIntents.find((intent) => intent?.npcId === npc.id);
+    applyNpcIntent(state, npc, sanitizeNpcIntent(state, npc, proposed, backup), check);
+  }
+  const providedFactionIntents = asArray(safeProposal.factionIntents);
+  for (const faction of state.factions) {
+    const proposed = providedFactionIntents.find((intent) => intent?.factionId === faction.id);
+    const backup = fallback.factionIntents.find((intent) => intent?.factionId === faction.id);
+    applyFactionIntent(state, faction, sanitizeFactionIntent(faction, proposed, backup), check);
+  }
+  for (const event of state.events) applyExistingEvent(state, event, check);
+  proposeEvents(state, safeProposal.eventProposals, check);
+  const incidentRoll = check({ actorId: 'world', action: 'regional_incident', modifier: 0, difficulty: 19, reason: '本轮是否出现额外区域变故' });
+  if (incidentRoll.roll >= 19) {
+    const region = [...state.regions].sort((a, b) => b.unrest - a.unrest)[0];
+    proposeEvents(state, [{ name: `${region.name}的突发变故`, description: '长期积累的风险在偶然因素触发下迅速显现。', type: 'conflict', level: 3, regionId: region.id }], check);
+  }
+  for (const rumor of asArray(safeProposal.rumorProposals).slice(0, 2)) {
+    const roll = check({ actorId: 'world', action: 'rumor_origin', modifier: integer(rumor?.intensity, 2, 1, 4) - 2, difficulty: 9, reason: '新风声是否获得关注' });
+    if (isSuccess(roll.outcome)) createRumor(state, rumor);
+  }
+  spreadRumors(state, check, rng);
+  settleEconomy(state, safeProposal, check);
+  settleBackground(state, safeProposal, check);
+  for (const faction of state.factions) faction.status = getFactionStatus(faction);
+  for (const npc of state.npcs) npc.knownRumorIds = [...new Set(npc.knownRumorIds)].slice(-100);
+  state.dice = state.dice.slice(-300);
+  const roundLogs = state.logs.filter((log) => log.round === state.round && log.public);
+  state.worldDigest = roundLogs.slice(0, 4).map((log) => log.title).join('；') || '各方继续处理自己的目标，世界局势暂未出现公开剧变。';
+  state.lastEvolution = {
+    round: state.round,
+    coreNpcActions: coreNpcs.length,
+    factionActions: state.factions.length,
+    diceRolls: state.dice.filter((roll) => roll.round === state.round).length,
+    backgroundPopulation: state.background.simulatedPeople,
+    completedAt: new Date().toISOString(),
+  };
+  return state;
+}
