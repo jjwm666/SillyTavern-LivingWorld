@@ -120,9 +120,9 @@ function normalizeFaction(faction, index, regionIds) {
   };
 }
 
-function normalizeRegion(region, index) {
+function normalizeRegion(region, index, depth = 0) {
   const name = text(region?.name, 100, `区域 ${index + 1}`);
-  return {
+  const result = {
     id: text(region?.id, 100) || stableId('region', name, index),
     name,
     type: text(region?.type, 40, '领域'),
@@ -135,12 +135,24 @@ function normalizeRegion(region, index) {
     prosperity: integer(region?.prosperity, 55, 0, 100),
     unrest: integer(region?.unrest, 15, 0, 100),
     population: integer(region?.population, 800, 0, 10000000),
+    priceIndex: integer(region?.priceIndex, 100, 30, 400),
+    weather: {
+      type: text(region?.weather?.type, 30, ['晴朗', '多云', '微风', '薄雾'][index % 4]),
+      intensity: integer(region?.weather?.intensity, index % 4 === 3 ? 1 : 0, 0, 3),
+      remaining: integer(region?.weather?.remaining, 2 + index % 3, 1, 8),
+    },
     neighbors: asArray(region?.neighbors).map((edge) => ({
       targetId: text(edge?.targetId || edge?.id || edge, 100),
       distance: integer(edge?.distance, 1, 1, 20),
       terrain: text(edge?.terrain, 40, '道路'),
     })).filter((edge) => edge.targetId),
+    children: [],
   };
+  if (depth < 3) {
+    result.children = asArray(region?.children || region?.subregions).slice(0, 24).map((child, childIndex) => normalizeRegion(child, childIndex, depth + 1));
+    if (result.children.length) connectRegions(result.children);
+  }
+  return result;
 }
 
 function connectRegions(regions) {
@@ -192,7 +204,7 @@ function normalizeRelations(factions) {
 export function normalizeWorld(input = {}, options = {}) {
   const coreLimit = integer(options.coreNpcLimit, 24, 1, 100);
   const sourceRegions = asArray(input.regions).length ? input.regions : [{ name: '起始之地', type: '领域' }];
-  const regions = sourceRegions.slice(0, 60).map(normalizeRegion);
+  const regions = sourceRegions.slice(0, 60).map((region, index) => normalizeRegion(region, index, 0));
   connectRegions(regions);
   const regionIds = regions.map((region) => region.id);
   const sourceFactions = asArray(input.factions).length ? input.factions : [{ name: '地方议会', goal: '维持秩序' }];
@@ -218,6 +230,7 @@ export function normalizeWorld(input = {}, options = {}) {
     premise: text(input.premise || input.world?.premise, 1600, '一个持续变化的动态世界'),
     tone: text(input.tone || input.world?.tone, 300, '沉浸、因果一致、人物自主'),
     round,
+    pendingTurns: integer(input.pendingTurns, 0, 0, 100),
     calendar: {
       year: integer(input.calendar?.year, 1, 1),
       month: integer(input.calendar?.month, 1, 1, 12),
@@ -227,6 +240,9 @@ export function normalizeWorld(input = {}, options = {}) {
     player: {
       name: text(input.player?.name, 100, '{{user}}'),
       regionId: regionIds.includes(input.player?.regionId) ? input.player.regionId : regionIds[0],
+      wealth: integer(input.player?.wealth, 100, 0, 1000000000),
+      income: integer(input.player?.income, 0, 0, 1000000000),
+      expenses: integer(input.player?.expenses, 0, 0, 1000000000),
       reputation: {
         authority: integer(input.player?.reputation?.authority, 0, -100, 100),
         common: integer(input.player?.reputation?.common, 0, -100, 100),
@@ -251,7 +267,10 @@ export function normalizeWorld(input = {}, options = {}) {
       type: event?.type === 'progress' ? 'progress' : 'conflict',
       level: integer(event?.level, 2, 1, 4),
       stage: text(event?.stage, 40, '萌芽'),
-      status: ['active', 'completed', 'failed'].includes(event?.status) ? event.status : 'active',
+      status: ['active', 'completed', 'failed', 'archived'].includes(event?.status) ? event.status : 'active',
+      pinned: event?.pinned === true,
+      resolvedRound: integer(event?.resolvedRound, ['completed', 'failed'].includes(event?.status) ? round : 0, 0),
+      retention: integer(event?.retention, 12, 1, 100),
       progress: integer(event?.progress, 0, -2, 100),
       requiredProgress: integer(event?.requiredProgress, 6, 2, 30),
       stalls: integer(event?.stalls, 0, 0, 10),
@@ -277,12 +296,43 @@ export function normalizeWorld(input = {}, options = {}) {
       createdRound: integer(rumor?.createdRound, round, 0),
       lastSpreadRound: integer(rumor?.lastSpreadRound, round, 0),
       active: rumor?.active !== false,
+      pinned: rumor?.pinned === true,
+      retention: integer(rumor?.retention, 8, 1, 100),
     })),
     economy: {
       climate: text(input.economy?.climate, 30, '平稳'),
       priceIndex: integer(input.economy?.priceIndex, 100, 20, 400),
       lastSignal: text(input.economy?.lastSignal, 500, '市场暂未出现明显异常'),
+      ledger: asArray(input.economy?.ledger).slice(-60).map((entry, index) => ({
+        id: text(entry?.id, 120) || `ledger_${index}`,
+        round: integer(entry?.round, round, 0),
+        amount: integer(entry?.amount, 0, -1000000000, 1000000000),
+        reason: text(entry?.reason, 240, '日常结算'),
+        regionId: text(entry?.regionId, 100),
+        balance: integer(entry?.balance, 0, 0, 1000000000),
+      })),
     },
+    storyHooks: asArray(input.storyHooks).slice(-40).map((hook, index) => ({
+      id: text(hook?.id, 120) || `hook_${index}`,
+      kind: ['npc', 'opportunity', 'complication'].includes(hook?.kind) ? hook.kind : 'npc',
+      actorId: text(hook?.actorId, 100),
+      regionId: regionIds.includes(hook?.regionId) ? hook.regionId : regionIds[0],
+      title: text(hook?.title, 160, '新的剧情动向'),
+      content: text(hook?.content, 600),
+      urgency: integer(hook?.urgency, 1, 1, 3),
+      status: ['active', 'approaching', 'resolved', 'expired'].includes(hook?.status) ? hook.status : 'active',
+      createdRound: integer(hook?.createdRound, round, 0),
+      expiresRound: integer(hook?.expiresRound, round + 3, 0),
+    })),
+    twists: asArray(input.twists).slice(-30).map((twist, index) => ({
+      id: text(twist?.id, 120) || `twist_${index}`,
+      round: integer(twist?.round, round, 0),
+      kind: twist?.kind === 'opportunity' ? 'opportunity' : 'complication',
+      actorId: text(twist?.actorId, 100),
+      regionId: text(twist?.regionId, 100),
+      content: text(twist?.content, 500),
+      diceRollId: text(twist?.diceRollId, 120),
+    })),
     background: {
       simulatedPeople: integer(input.background?.simulatedPeople, regions.reduce((sum, region) => sum + region.population, 0), 0),
       lastSettlement: text(input.background?.lastSettlement, 700, '背景人群维持日常生活'),

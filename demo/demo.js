@@ -11,7 +11,7 @@ world = evolveWorld(world, heuristicProposal(world));
 const settings = { ...DEFAULT_SETTINGS };
 const panel = new LivingWorldPanel({
   onEvolve: () => {
-    world = evolveWorld(world, heuristicProposal(world));
+    world = evolveWorld(world, heuristicProposal(world), settings);
     panel.setData({ world, status: { kind: 'ready', message: `第 ${world.round} 轮本地演示完成` } });
     panel.notify(`第 ${world.round} 轮推演完成`, 'success');
   },
@@ -32,6 +32,20 @@ const panel = new LivingWorldPanel({
     } catch (error) {
       panel.notify(error.message, 'error');
     }
+  },
+  onEditWorld: (raw) => {
+    try {
+      world = normalizeWorld(safeJsonParse(raw));
+      panel.setData({ world });
+      panel.notify('世界修改已保存', 'success');
+    } catch (error) {
+      panel.notify(`保存失败：${error.message}`, 'error');
+    }
+  },
+  onTogglePin: (kind, id) => {
+    const item = (kind === 'rumor' ? world.rumors : world.events).find((entry) => entry.id === id);
+    if (item) item.pinned = !item.pinned;
+    panel.setData({ world });
   },
   onReset: () => {
     world = null;

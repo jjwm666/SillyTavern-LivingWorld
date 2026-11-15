@@ -123,3 +123,90 @@ test('custom prompt presets reach only their intended backend requests', () => {
   assert.ok(!bootstrap.includes('EVOLUTION_ONLY_DIRECTIVE'));
   assert.ok(!buildWorldContext(world).includes('CUSTOM_CREATIVE_DIRECTIVE'));
 });
+
+test('weather increases real travel difficulty and regional prices', () => {
+  const clear = createDemoWorld();
+  const storm = createDemoWorld();
+  for (const world of [clear, storm]) {
+    for (const region of world.regions) region.weather.remaining = 8;
+  }
+  for (const id of ['region_harbor', 'region_capital']) {
+    byId(storm.regions, id).weather = { type: '风暴', intensity: 3, remaining: 8 };
+    byId(storm.regions, id).priceIndex = 150;
+  }
+  const proposal = { npcIntents: [{ npcId: 'npc_he', action: 'travel', regionId: 'region_capital', summary: '前往弥央城' }] };
+  const clearResult = evolveWorld(clear, proposal);
+  const stormResult = evolveWorld(storm, proposal);
+  const clearRoll = clearResult.dice.find((roll) => roll.actorId === 'npc_he' && roll.action === 'travel');
+  const stormRoll = stormResult.dice.find((roll) => roll.actorId === 'npc_he' && roll.action === 'travel');
+  assert.equal(stormRoll.difficulty, clearRoll.difficulty + 6);
+  assert.notEqual(byId(stormResult.regions, 'region_harbor').priceIndex, byId(clearResult.regions, 'region_harbor').priceIndex);
+});
+
+test('player trade changes wealth, ledger, reputation and faction standing', () => {
+  const world = createDemoWorld();
+  for (const key of Object.keys(world.player.reputation)) world.player.reputation[key] = 100;
+  world.player.reputation.circuit = 0;
+  const faction = byId(world.factions, 'faction_compact');
+  faction.playerRelation = 100;
+  const before = world.player.wealth;
+  const result = evolveWorld(world, {
+    playerImpactProposal: { action: 'trade', regionId: 'region_harbor', factionId: faction.id, amount: 10, summary: '出售航路物资' },
+  }, { diceModifier: 10 });
+  assert.equal(result.player.wealth, before + 19);
+  assert.equal(result.player.reputation.circuit, 2);
+  assert.equal(byId(result.factions, faction.id).playerRelation, 100);
+  assert.equal(result.economy.ledger.length, 2);
+  assert.equal(result.economy.ledger.at(-1).amount, 20);
+  const roll = result.dice.find((item) => item.action === 'player_trade');
+  assert.equal(roll.globalModifier, 10);
+  assert.equal(roll.baseModifier, 4);
+});
+
+test('NPC seek_player creates an active story hook for the next generation', () => {
+  const world = createDemoWorld();
+  const result = evolveWorld(world, {
+    npcIntents: [{ npcId: 'npc_he', action: 'seek_player', goal: '建立新航路', summary: '邀请玩家共同查看海图' }],
+  }, { diceModifier: 10 });
+  const hook = result.storyHooks.find((item) => item.actorId === 'npc_he');
+  assert.ok(hook);
+  assert.equal(hook.status, 'active');
+  assert.equal(hook.regionId, result.player.regionId);
+  assert.ok(buildWorldContext(result).includes('邀请玩家共同查看海图'));
+});
+
+test('pinned rumors resist dissipation while ordinary rumors lose local strength', () => {
+  const ordinary = createDemoWorld();
+  const pinned = createDemoWorld();
+  pinned.rumors[0].pinned = true;
+  for (const world of [ordinary, pinned]) {
+    world.rumors[0].locations = [{ regionId: 'region_harbor', strength: 3, arrivedRound: 0 }];
+    world.rumors[0].lastSpreadRound = 0;
+  }
+  const ordinaryResult = evolveWorld(evolveWorld(ordinary, {}), {});
+  const pinnedResult = evolveWorld(evolveWorld(pinned, {}), {});
+  assert.ok(ordinaryResult.rumors[0].locations.find((location) => location.regionId === 'region_harbor').strength < 3);
+  assert.equal(pinnedResult.rumors[0].locations.find((location) => location.regionId === 'region_harbor').strength, 3);
+});
+
+test('resolved events archive after retention unless pinned', () => {
+  const world = createDemoWorld();
+  world.events[0].status = 'completed';
+  world.events[0].resolvedRound = 0;
+  world.events[0].retention = 1;
+  world.events[1].status = 'completed';
+  world.events[1].resolvedRound = 0;
+  world.events[1].retention = 1;
+  world.events[1].pinned = true;
+  const result = evolveWorld(world, {});
+  assert.equal(result.events[0].status, 'archived');
+  assert.equal(result.events[1].status, 'completed');
+});
+
+test('bootstrap prompt requests recursive subregions and player state', () => {
+  const prompt = buildBootstrapPrompt('generic card');
+  assert.ok(prompt.includes('children 次级区域'));
+  assert.ok(prompt.includes('再次级区域'));
+  assert.ok(prompt.includes('"weather"'));
+  assert.ok(prompt.includes('"wealth"'));
+});

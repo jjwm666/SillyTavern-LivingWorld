@@ -36,6 +36,18 @@ test('normalization repairs invalid IDs and clamps values', () => {
   assert.equal(world.factions[0].stability, 0);
 });
 
+test('region normalization preserves three levels and same-layer routes', () => {
+  const world = createDemoWorld();
+  const harbor = world.regions.find((region) => region.id === 'region_harbor');
+  const oldtown = harbor.children.find((region) => region.id === 'region_harbor_oldtown');
+  assert.equal(harbor.children.length, 2);
+  assert.equal(oldtown.children.length, 2);
+  assert.ok(oldtown.children.every((region) => region.weather && Number.isFinite(region.priceIndex)));
+  assert.ok(harbor.children.every((region) => region.neighbors.every((edge) => harbor.children.some((sibling) => sibling.id === edge.targetId))));
+  const normalized = normalizeWorld(world);
+  assert.equal(normalized.regions.find((region) => region.id === 'region_harbor').children[1].children.length, 2);
+});
+
 test('regenerate baseline is the state before the current AI floor', () => {
   const round0 = { round: 0 };
   const round1 = { round: 1 };

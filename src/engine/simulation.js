@@ -1,4 +1,4 @@
-import { EVENT_STAGES, FACTION_ACTIONS, NPC_ACTIONS } from './constants.js';
+import { ACTION_LABELS, EVENT_STAGES, FACTION_ACTIONS, NPC_ACTIONS } from './constants.js';
 import { heuristicProposal } from './director.js';
 import { isSuccess, progressFromOutcome, rollCheck, SeededRandom } from './rng.js';
 import { addLog, addMemory, changeRelation, getFactionStatus } from './state.js';
@@ -114,6 +114,131 @@ function sanitizeNpcIntent(state, npc, intent, fallback) {
   };
 }
 
+function advanceWeather(state, check) {
+  const severe = ['风暴', '暴雨', '寒潮', '浓雾'];
+  for (const region of state.regions) {
+    region.weather.remaining -= 1;
+    if (region.weather.remaining > 0) continue;
+    const previous = region.weather.type;
+    const roll = check({ actorId: region.id, regionId: region.id, action: 'weather', difficulty: 12, reason: `${region.name}天气变化` });
+    let type = '晴朗';
+    let intensity = 0;
+    if (roll.roll <= 3 || roll.outcome === 'critical_failure') {
+      type = severe[(roll.roll + region.name.length) % severe.length];
+      intensity = roll.roll === 1 ? 3 : 2;
+    } else if (roll.roll <= 8) {
+      type = ['降雨', '浓雾', '寒潮', '大风'][(roll.roll + region.name.length) % 4];
+      intensity = 1;
+    } else if (roll.roll <= 14) type = '多云';
+    else if (roll.roll <= 17) type = '微风';
+    region.weather = { type, intensity, remaining: 2 + roll.roll % 3 };
+    if (type !== previous || intensity >= 2) {
+      addLog(state, { type: 'weather', title: `${region.name}转为${type}`, detail: intensity >= 2 ? `天气开始明显影响交通、生产与物价，影响等级 ${intensity}/3。` : '当地天气趋于平稳。', regionId: region.id, diceRollId: roll.id });
+    }
+  }
+}
+
+function addLedger(state, amount, reason, regionId) {
+  state.player.wealth = integer(state.player.wealth + amount, 0, 0, 1000000000);
+  if (amount >= 0) state.player.income = integer(state.player.income + amount, 0, 0, 1000000000);
+  else state.player.expenses = integer(state.player.expenses - amount, 0, 0, 1000000000);
+  state.economy.ledger.push({ id: `ledger_${state.round}_${state.economy.ledger.length}`, round: state.round, amount, reason: text(reason, 240, '日常结算'), regionId: regionId || state.player.regionId, balance: state.player.wealth });
+  state.economy.ledger = state.economy.ledger.slice(-60);
+}
+
+function settlePlayerImpact(state, proposal, check) {
+  const impact = proposal.playerImpactProposal || {};
+  if (state.regions.some((region) => region.id === impact.regionId)) state.player.regionId = impact.regionId;
+  const region = byId(state.regions, state.player.regionId) || state.regions[0];
+  state.player.regionId = region.id;
+  const action = ['trade', 'aid', 'scheme', 'investigate', 'travel', 'rest'].includes(impact.action) ? impact.action : 'none';
+  const faction = byId(state.factions, impact.factionId) || byId(state.factions, region.controlFactionId);
+  const upkeep = Math.max(1, Math.round(region.priceIndex / 100 + region.weather.intensity));
+  if (state.round % 3 === 0 || action !== 'none') addLedger(state, -upkeep, '旅途与日常补给', region.id);
+  if (action === 'none') return;
+  const reputation = Object.values(state.player.reputation).reduce((sum, value) => sum + value, 0) / 4;
+  const modifier = Math.round(reputation / 35 + (faction?.playerRelation || 0) / 45);
+  const difficulty = 9 + Math.ceil(region.danger / 4) + region.weather.intensity;
+  const roll = check({ actorId: 'player', regionId: region.id, action: `player_${action}`, modifier, difficulty, reason: text(impact.summary, 300, `玩家${ACTION_LABELS[action] || action}`) });
+  const success = isSuccess(roll.outcome);
+  const criticalSuccess = roll.outcome === 'critical_success';
+  const criticalFailure = roll.outcome === 'critical_failure';
+  const amount = integer(impact.amount, 8, 1, 30);
+  let delta = 0;
+  const changeReputation = (key, value) => { state.player.reputation[key] = integer(state.player.reputation[key] + value, 0, -100, 100); };
+  if (action === 'trade') {
+    delta = success ? amount + (criticalSuccess ? amount : 0) : -Math.min(state.player.wealth, Math.ceil(amount / 2));
+    changeReputation('circuit', success ? 2 : -1);
+    if (success) region.prosperity = integer(region.prosperity + 1, 55, 0, 100);
+  } else if (action === 'aid') {
+    changeReputation('common', success ? 4 : criticalFailure ? -2 : 0);
+    if (success) changeReputation('authority', 1);
+  } else if (action === 'scheme') {
+    changeReputation('shadow', success ? 4 : -2);
+    if (!success) changeReputation('authority', criticalFailure ? -5 : -2);
+  } else if (action === 'investigate') {
+    changeReputation('circuit', success ? 3 : 0);
+    if (criticalFailure) changeReputation('common', -1);
+  } else if (action === 'rest' && success) changeReputation('common', 1);
+  if (delta) addLedger(state, delta, success ? '行动收益' : '行动损失', region.id);
+  if (faction) faction.playerRelation = integer(faction.playerRelation + (success ? 3 : criticalFailure ? -6 : -2), 0, -100, 100);
+  addLog(state, { type: 'player', title: `玩家行动：${ACTION_LABELS[action]}`, detail: `${text(impact.summary, 300, '本轮行动已结算')}。${success ? '行动取得进展' : '行动遭遇阻碍'}${delta ? `，资金${delta > 0 ? '+' : ''}${delta}` : ''}${faction ? `，${faction.name}态度${success ? '改善' : '转冷'}` : ''}。`, regionId: region.id, actorId: 'player', diceRollId: roll.id, public: !(action === 'scheme' && success) });
+}
+
+function nextStepToward(state, fromId, targetId) {
+  if (fromId === targetId) return fromId;
+  const queue = [[fromId]];
+  const seen = new Set([fromId]);
+  while (queue.length) {
+    const path = queue.shift();
+    const region = byId(state.regions, path[path.length - 1]);
+    for (const edge of region?.neighbors || []) {
+      if (seen.has(edge.targetId)) continue;
+      const next = [...path, edge.targetId];
+      if (edge.targetId === targetId) return next[1];
+      seen.add(edge.targetId);
+      queue.push(next);
+    }
+  }
+  return fromId;
+}
+
+function addStoryHook(state, hook) {
+  state.storyHooks.push({ id: hook.id || `hook_${state.round}_${state.storyHooks.length}`, kind: hook.kind || 'npc', actorId: hook.actorId || null, regionId: hook.regionId, title: text(hook.title, 160, '新的剧情动向'), content: text(hook.content, 600), urgency: integer(hook.urgency, 1, 1, 3), status: hook.status || 'active', createdRound: state.round, expiresRound: state.round + 3 });
+  state.storyHooks = state.storyHooks.slice(-40);
+}
+
+function createTwists(state) {
+  const roll = state.dice.filter((item) => item.round === state.round && ['critical_failure', 'critical_success'].includes(item.outcome) && !['weather', 'regional_incident'].includes(item.action))
+    .sort((a, b) => (a.outcome === 'critical_failure' ? -1 : 1) - (b.outcome === 'critical_failure' ? -1 : 1))[0];
+  if (!roll) return;
+  const actor = byId(state.npcs, roll.actorId);
+  const event = byId(state.events, roll.actorId);
+  const subject = actor?.name || event?.name || (roll.actorId === 'player' ? '玩家的行动' : '地方局势');
+  const kind = roll.outcome === 'critical_failure' ? 'complication' : 'opportunity';
+  const regionId = roll.regionId || actor?.locationId || event?.regionId || state.player.regionId;
+  const content = kind === 'complication'
+    ? `${subject}原本的行动引发额外阻碍，相关人物需要面对代价、误解或新的时间压力；具体表现应延续当前场景因果。`
+    : `${subject}出现了超出预期的机会，相关人物可能主动提出合作、透露线索或改变原定安排；玩家可以自行决定是否承接。`;
+  state.twists.push({ id: `twist_${roll.id}`, round: state.round, kind, actorId: roll.actorId, regionId, content, diceRollId: roll.id });
+  state.twists = state.twists.slice(-30);
+  addStoryHook(state, { id: `hook_${roll.id}`, kind, actorId: roll.actorId, regionId, title: kind === 'complication' ? '意外波折' : '意外机会', content, urgency: 3, status: regionId === state.player.regionId ? 'active' : 'approaching' });
+  addLog(state, { type: 'twist', title: kind === 'complication' ? '大失败引发意外波折' : '大成功打开意外机会', detail: content, regionId, actorId: roll.actorId, diceRollId: roll.id });
+}
+
+function syncStoryHooks(state) {
+  for (const hook of state.storyHooks) {
+    if (hook.status === 'approaching') {
+      const actor = byId(state.npcs, hook.actorId);
+      if (!actor || actor.locationId === state.player.regionId || hook.regionId === state.player.regionId) {
+        hook.status = 'active';
+        hook.regionId = state.player.regionId;
+      }
+    }
+    if (['active', 'approaching'].includes(hook.status) && state.round > hook.expiresRound) hook.status = 'expired';
+  }
+}
+
 function applyNpcIntent(state, npc, intent, check) {
   const region = byId(state.regions, npc.locationId);
   if (!region) return;
@@ -139,7 +264,7 @@ function applyNpcIntent(state, npc, intent, check) {
     }
     attribute = 'force';
     modifier = Math.floor(npc.attributes.force / 2) + Math.floor(npc.personality.caution / 4);
-    difficulty = 7 + edge.distance + Math.floor(targetRegion.danger / 3);
+    difficulty = 7 + edge.distance + Math.floor(targetRegion.danger / 3) + region.weather.intensity + targetRegion.weather.intensity;
   } else if (['aid', 'confront'].includes(intent.action)) {
     if (!targetNpc || targetNpc.locationId !== npc.locationId || !targetNpc.alive) {
       npc.lastAction = '目标不在同一区域，行动取消';
@@ -168,6 +293,10 @@ function applyNpcIntent(state, npc, intent, check) {
     attribute = 'force';
     modifier = Math.floor(npc.attributes.force / 2) + Math.floor(npc.mood.arousal / 4);
     difficulty = 9 + Math.floor(targetNpc.attributes.force / 2);
+  } else if (intent.action === 'seek_player') {
+    attribute = 'empathy';
+    modifier = Math.floor(npc.attributes.empathy / 2) + Math.floor(npc.personality.ambition / 3);
+    difficulty = 9 + (npc.locationId === state.player.regionId ? 0 : 2);
   } else if (intent.action === 'rest') {
     attribute = 'empathy';
     modifier = 2;
@@ -277,6 +406,17 @@ function applyNpcIntent(state, npc, intent, check) {
     });
     for (const other of state.npcs.filter((item) => item.locationId === region.id)) other.knownRumorIds.push(rumor.id);
     detail = success ? `${npc.name}让一则风声在${region.name}扩散。` : `${npc.name}传播的风声没有获得多少关注。`;
+  } else if (intent.action === 'seek_player') {
+    if (success) {
+      const nextRegionId = nextStepToward(state, npc.locationId, state.player.regionId);
+      npc.locationId = nextRegionId;
+      const arrived = nextRegionId === state.player.regionId;
+      addStoryHook(state, { actorId: npc.id, regionId: nextRegionId, title: `${npc.name}${arrived ? '主动找上门' : '正在寻找玩家'}`, content: `${npc.name}基于自己的目标与听闻，决定${text(intent.summary, 300, '主动联系玩家')}。${arrived ? '可在当前场景中自然发起对话、请求或警告，不替玩家决定回应。' : '目前正沿真实路线接近玩家所在地。'}`, urgency: critical ? 3 : 2, status: arrived ? 'active' : 'approaching' });
+      detail = arrived ? `${npc.name}主动来到玩家所在地，准备就“${plan.goal}”发起接触。` : `${npc.name}启程寻找玩家，沿路线抵达${byId(state.regions, nextRegionId)?.name || '下一站'}。`;
+    } else {
+      detail = `${npc.name}试图寻找玩家，但被自己的事务或错误线索耽搁。`;
+      if (criticalFailure) npc.needs.safety = integer(npc.needs.safety - 1, 0, 0, 10);
+    }
   } else if (intent.action === 'rest') {
     if (success) {
       npc.needs.safety = integer(npc.needs.safety + 2, 0, 0, 10);
@@ -392,13 +532,14 @@ function applyExistingEvent(state, event, check) {
     + Math.floor(average(factions.map((faction) => faction.stability), 50) / 35)
     - Math.floor(region.danger / 4);
   const difficulty = 10 + event.level;
-  const roll = check({ actorId: event.id, action: 'event_progress', modifier, difficulty, reason: `${event.name}进入阶段判定` });
+  const roll = check({ actorId: event.id, action: 'event_progress', regionId: region.id, modifier, difficulty: difficulty + region.weather.intensity, reason: `${event.name}进入阶段判定` });
   const delta = progressFromOutcome(roll.outcome);
   event.progress = Math.max(0, event.progress + delta);
   event.stalls = delta > 0 ? 0 : event.stalls + (delta < 0 ? 2 : 1);
   event.lastRound = state.round;
   if (event.progress >= event.requiredProgress) event.status = 'completed';
   if (event.stalls >= 3) event.status = 'failed';
+  if (['completed', 'failed'].includes(event.status) && !event.resolvedRound) event.resolvedRound = state.round;
   event.stage = stageFor(event);
   event.history.push(`第${state.round}轮：${roll.formula}=${roll.total}，${event.stage}`);
   event.history = event.history.slice(-30);
@@ -464,7 +605,7 @@ function spreadRumors(state, check, rng) {
       const origins = [...rumor.locations];
       for (const origin of origins) {
         const region = byId(state.regions, origin.regionId);
-        const candidates = (region?.neighbors || []).filter((edge) => !rumor.locations.some((location) => location.regionId === edge.targetId));
+        const candidates = region?.weather.intensity >= 3 ? [] : (region?.neighbors || []).filter((edge) => !rumor.locations.some((location) => location.regionId === edge.targetId));
         if (!candidates.length || origin.strength <= 0) continue;
         const edge = rng.pick(candidates);
         rumor.locations.push({ regionId: edge.targetId, strength: Math.max(1, origin.strength - 1), arrivedRound: state.round });
@@ -475,7 +616,8 @@ function spreadRumors(state, check, rng) {
       rumor.lastSpreadRound = state.round;
       const arrived = rumor.locations.filter((location) => location.arrivedRound === state.round).map((location) => byId(state.regions, location.regionId)?.name).filter(Boolean);
       addLog(state, { type: 'rumor', title: '风声传到新的地区', detail: `“${rumor.content}”传至${arrived.join('、')}。`, diceRollId: roll.id });
-    } else {
+    }
+    if (!rumor.pinned) {
       for (const location of rumor.locations) {
         if (state.round - location.arrivedRound > 0 && state.round % 2 === 0) location.strength = Math.max(0, location.strength - 1);
       }
@@ -485,7 +627,7 @@ function spreadRumors(state, check, rng) {
     }
     if (!rumor.locations.some((location) => location.strength > 0)) rumor.active = false;
   }
-  state.rumors = state.rumors.filter((rumor) => rumor.active || state.round - rumor.createdRound <= 8).slice(-100);
+  state.rumors = state.rumors.filter((rumor) => rumor.pinned || rumor.active || state.round - rumor.createdRound <= rumor.retention).slice(-100);
 }
 
 function settleEconomy(state, proposal, check) {
@@ -493,7 +635,11 @@ function settleEconomy(state, proposal, check) {
   const unrest = average(state.regions.map((region) => region.unrest), 20);
   const roll = check({ actorId: 'world', action: 'economy', modifier: Math.floor(prosperity / 30) - Math.floor(unrest / 35), difficulty: 10, reason: '整体经济气候变化' });
   const success = isSuccess(roll.outcome);
-  state.economy.priceIndex = integer(state.economy.priceIndex + (success ? -2 : 3) + (roll.outcome.startsWith('critical') ? (success ? -2 : 2) : 0), 100, 20, 400);
+  for (const region of state.regions) {
+    const localDelta = (success ? -1 : 2) + region.weather.intensity * 2 + Math.floor(region.unrest / 35) - Math.floor(region.prosperity / 45);
+    region.priceIndex = integer(region.priceIndex + localDelta, 100, 30, 400);
+  }
+  state.economy.priceIndex = integer(Math.round(average(state.regions.map((region) => region.priceIndex), 100)) + (success ? -1 : 1), 100, 20, 400);
   state.economy.climate = unrest >= 65 ? '动荡' : prosperity >= 72 && state.economy.priceIndex < 140 ? '繁荣' : prosperity < 40 || state.economy.priceIndex > 155 ? '衰退' : '平稳';
   state.economy.lastSignal = text(proposal.economicSignal, 500) || (success ? '交易与生产保持稳定，部分价格压力缓解。' : '需求与供应出现波动，市场参与者转向谨慎。');
   addLog(state, { type: 'economy', title: `经济气候：${state.economy.climate}`, detail: `${state.economy.lastSignal} 价格指数 ${state.economy.priceIndex}。`, diceRollId: roll.id });
@@ -503,11 +649,11 @@ function settleBackground(state, proposal, check) {
   let totalPopulation = 0;
   let activeRegions = 0;
   for (const region of state.regions) {
-    const roll = check({ actorId: region.id, action: 'background', modifier: Math.floor(region.prosperity / 30) - Math.floor(region.unrest / 30), difficulty: 10, reason: `${region.name}背景人群结算` });
+    const roll = check({ actorId: region.id, regionId: region.id, action: 'background', modifier: Math.floor(region.prosperity / 30) - Math.floor(region.unrest / 30) - region.weather.intensity, difficulty: 10, reason: `${region.name}背景人群结算` });
     const success = isSuccess(roll.outcome);
     const populationChange = success ? 1.01 + (roll.outcome === 'critical_success' ? 0.01 : 0) : 0.995 - (roll.outcome === 'critical_failure' ? 0.01 : 0);
     region.population = Math.max(0, Math.round(region.population * populationChange));
-    region.prosperity = integer(region.prosperity + (success ? 1 : -1), 0, 0, 100);
+    region.prosperity = integer(region.prosperity + (success ? 1 : -1) - (region.weather.intensity >= 2 ? 1 : 0), 0, 0, 100);
     region.unrest = integer(region.unrest + (success ? -1 : 1), 0, 0, 100);
     totalPopulation += region.population;
     if (success) activeRegions += 1;
@@ -522,6 +668,7 @@ function settleBackground(state, proposal, check) {
 export function evolveWorld(previousState, proposal = {}, options = {}) {
   const state = deepClone(previousState);
   state.round += 1;
+  state.pendingTurns = 0;
   state.calendar.day += 1;
   if (state.calendar.day > 30) {
     state.calendar.day = 1;
@@ -534,18 +681,27 @@ export function evolveWorld(previousState, proposal = {}, options = {}) {
   state.calendar.turnLabel = `第 ${state.round} 轮 · ${state.calendar.year}年${state.calendar.month}月${state.calendar.day}日`;
   const rng = new SeededRandom(`${state.seed}:round:${state.round}`);
   let sequence = 0;
+  const globalModifier = integer(options.diceModifier, 0, -10, 10);
   const check = (input) => {
-    const roll = rollCheck(rng, { ...input, round: state.round, sequence: sequence += 1 });
+    const baseModifier = integer(input.modifier, 0, -20, 20);
+    const roll = rollCheck(rng, { ...input, modifier: baseModifier + globalModifier, round: state.round, sequence: sequence += 1 });
+    roll.baseModifier = baseModifier;
+    roll.globalModifier = globalModifier;
     state.dice.push(roll);
     return roll;
   };
-  const fallback = heuristicProposal(state);
+  advanceWeather(state, check);
   const safeProposal = proposal && typeof proposal === 'object' ? proposal : {};
+  settlePlayerImpact(state, safeProposal, check);
+  const fallback = heuristicProposal(state);
   const providedNpcIntents = asArray(safeProposal.npcIntents);
   const coreNpcs = state.npcs.filter((npc) => npc.core && npc.alive);
-  for (const npc of coreNpcs) {
+  for (const [index, npc] of coreNpcs.entries()) {
     const proposed = providedNpcIntents.find((intent) => intent?.npcId === npc.id);
-    const backup = fallback.npcIntents.find((intent) => intent?.npcId === npc.id);
+    let backup = fallback.npcIntents.find((intent) => intent?.npcId === npc.id);
+    if (!proposed && npc.locationId === state.player.regionId && (state.round + index) % 5 === 0 && npc.personality.ambition >= 6) {
+      backup = { npcId: npc.id, action: 'seek_player', goal: npc.goals[0]?.description, summary: `就“${npc.goals[0]?.description || '自己的处境'}”主动接触玩家`, secret: false };
+    }
     applyNpcIntent(state, npc, sanitizeNpcIntent(state, npc, proposed, backup), check);
   }
   const providedFactionIntents = asArray(safeProposal.factionIntents);
@@ -568,6 +724,11 @@ export function evolveWorld(previousState, proposal = {}, options = {}) {
   spreadRumors(state, check, rng);
   settleEconomy(state, safeProposal, check);
   settleBackground(state, safeProposal, check);
+  for (const event of state.events) {
+    if (!event.pinned && ['completed', 'failed'].includes(event.status) && state.round - event.resolvedRound >= event.retention) event.status = 'archived';
+  }
+  createTwists(state);
+  syncStoryHooks(state);
   for (const faction of state.factions) faction.status = getFactionStatus(faction);
   for (const npc of state.npcs) npc.knownRumorIds = [...new Set(npc.knownRumorIds)].slice(-100);
   state.dice = state.dice.slice(-300);
@@ -579,6 +740,7 @@ export function evolveWorld(previousState, proposal = {}, options = {}) {
     factionActions: state.factions.length,
     diceRolls: state.dice.filter((roll) => roll.round === state.round).length,
     backgroundPopulation: state.background.simulatedPeople,
+    activeStoryHooks: state.storyHooks.filter((hook) => hook.status === 'active').length,
     completedAt: new Date().toISOString(),
   };
   return state;

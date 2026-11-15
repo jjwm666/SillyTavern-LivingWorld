@@ -16,6 +16,20 @@ export function createDemoWorld() {
     resources: type === '港口' ? ['航运', '仓储'] : type === '城市' ? ['金融', '人脉'] : ['地方物产'],
     danger: Math.round(unrest / 12), population: 900 + prosperity * 24, neighbors: [],
   }));
+  regions.find((region) => region.id === 'region_harbor').children = [
+    { id: 'region_harbor_docks', name: '白砾港·潮汐码头', type: '港区', x: 220, y: 190, controlFactionId: 'faction_compact', prosperity: 72, unrest: 18, danger: 2, population: 860, resources: ['装卸', '修船'], neighbors: [{ targetId: 'region_harbor_oldtown', distance: 1, terrain: '石阶' }] },
+    { id: 'region_harbor_oldtown', name: '白砾港·旧城仓街', type: '街区', x: 650, y: 210, controlFactionId: 'faction_compact', prosperity: 61, unrest: 26, danger: 3, population: 1120, resources: ['仓储', '旧货'], neighbors: [{ targetId: 'region_harbor_docks', distance: 1, terrain: '石阶' }], children: [
+      { id: 'region_harbor_saltmarket', name: '旧城仓街·盐雾市', type: '市集', x: 260, y: 210, controlFactionId: 'faction_compact', prosperity: 66, unrest: 21, danger: 2, population: 280, resources: ['调味品', '消息'] },
+      { id: 'region_harbor_customs', name: '旧城仓街·联合税关', type: '关口', x: 700, y: 330, controlFactionId: 'faction_council', prosperity: 48, unrest: 31, danger: 3, population: 90, resources: ['税务', '通行文书'] },
+    ] },
+  ];
+  regions.find((region) => region.id === 'region_foundry').children = [
+    { id: 'region_foundry_upper', name: '炉心工区·上层炉桥', type: '工区', x: 240, y: 180, controlFactionId: 'faction_guild', prosperity: 68, unrest: 24, danger: 3, population: 740, resources: ['精炼', '能源'] },
+    { id: 'region_foundry_lower', name: '炉心工区·下层宿舍', type: '居住区', x: 670, y: 350, controlFactionId: 'faction_guild', prosperity: 43, unrest: 39, danger: 4, population: 1380, resources: ['劳工', '诊所'], children: [
+      { id: 'region_foundry_clinic', name: '下层宿舍·葵灯诊所', type: '诊所', x: 380, y: 250, controlFactionId: 'faction_guild', prosperity: 45, unrest: 27, danger: 2, population: 60, resources: ['医疗', '病例'] },
+      { id: 'region_foundry_canteen', name: '下层宿舍·公共食堂', type: '公共设施', x: 700, y: 180, controlFactionId: 'faction_guild', prosperity: 39, unrest: 44, danger: 2, population: 110, resources: ['配给', '集会'] },
+    ] },
+  ];
   const edges = [
     ['region_harbor', 'region_capital', 2], ['region_harbor', 'region_orchard', 2],
     ['region_harbor', 'region_border', 3], ['region_capital', 'region_reach', 3],
@@ -81,6 +95,7 @@ export function createDemoWorld() {
       { name: '配额危机', description: '工区能源不足正在影响所有依赖生产的地区。', intensity: 3 },
     ],
     regions, factions, npcs: people,
+    player: { name: '旅人', regionId: 'region_harbor', wealth: 160, reputation: { authority: 4, common: 8, shadow: 0, circuit: 3 } },
     events: [
       { id: 'event_quota', name: '工区配额争议', description: '工区要求独立配给，评议会担忧先例扩散。', type: 'conflict', level: 3, regionId: 'region_foundry', actorIds: ['npc_qin', 'npc_shen'], factionIds: ['faction_guild', 'faction_council'], progress: 2, requiredProgress: 7 },
       { id: 'event_mapping', name: '新航路测绘', description: '多方正在争夺第一条稳定新航路的所有权。', type: 'progress', level: 3, regionId: 'region_harbor', actorIds: ['npc_he', 'npc_luo'], factionIds: ['faction_compact'], progress: 1, requiredProgress: 6 },

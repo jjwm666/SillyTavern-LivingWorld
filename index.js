@@ -32,6 +32,8 @@ class LivingWorldController {
       onSettingsChange: (settings) => this.updateSettings(settings),
       onExport: () => this.exportWorld(),
       onImport: (raw) => this.importWorld(raw),
+      onEditWorld: (raw) => this.editWorld(raw),
+      onTogglePin: (kind, id) => this.togglePinned(kind, id),
       onReset: () => this.resetWorld(),
       onTestApi: () => this.testApi(),
     });
@@ -53,6 +55,7 @@ class LivingWorldController {
     this.getSettings();
     await this.store.hydrate();
     this.panel.mount();
+    this.installMenuEntry();
     this.panel.setData({ settings: this.getSettings(), status: this.status });
     const { eventSource, event_types } = this.context();
     eventSource.on(event_types.GENERATION_ENDED, () => this.handleGenerationEnded());
@@ -60,6 +63,23 @@ class LivingWorldController {
     eventSource.on(event_types.MESSAGE_DELETED, () => setTimeout(() => this.handleMessageDeleted(), 0));
     eventSource.on(event_types.MESSAGE_SWIPED, () => { this.generationBaseline = null; });
     await this.loadChat();
+  }
+
+  installMenuEntry() {
+    if (document.querySelector('#living_world_menu_button')) return;
+    const menu = document.querySelector('#options .options-content') || document.querySelector('#options');
+    if (!menu) return;
+    const entry = document.createElement('a');
+    entry.id = 'living_world_menu_button';
+    entry.href = '#';
+    entry.innerHTML = '<i class="fa-solid fa-earth-asia"></i><span>万象世界引擎</span>';
+    entry.addEventListener('click', (event) => {
+      event.preventDefault();
+      const options = document.querySelector('#options');
+      if (options) options.style.display = 'none';
+      this.panel.open();
+    });
+    menu.appendChild(entry);
   }
 
   async loadChat() {
@@ -189,6 +209,16 @@ class LivingWorldController {
       baseline = await this.initializeWorld();
       if (!baseline) return;
     }
+    const interval = Math.max(1, Math.min(20, Number(settings.evolutionInterval) || 1));
+    const pendingTurns = Math.max(baseline.pendingTurns || 0, this.world?.pendingTurns || 0) + 1;
+    baseline.pendingTurns = pendingTurns;
+    if (pendingTurns < interval) {
+      this.world = deepClone(baseline);
+      await this.store.save(this.world);
+      this.setStatus('ready', `已记录第 ${pendingTurns}/${interval} 次回复，达到设定次数后自动推演`);
+      this.panel.setData({ world: this.world, settings, status: this.status });
+      return;
+    }
     await this.evolve({ baseline, turnKey, messageIndex, manual: false });
   }
 
@@ -287,6 +317,35 @@ class LivingWorldController {
     } catch (error) {
       this.panel.notify(`导入失败：${error.message}`, 'error');
     }
+  }
+
+  async editWorld(raw) {
+    try {
+      const parsed = typeof raw === 'string' ? safeJsonParse(raw) : raw;
+      const world = normalizeWorld(parsed, { coreNpcLimit: this.getSettings().coreNpcLimit });
+      addLog(world, { type: 'world', title: '用户修订世界内容', detail: '用户通过世界编辑器保存了一次修订。', public: false });
+      this.world = world;
+      await this.store.save(world);
+      this.panel.setData({ world, settings: this.getSettings(), status: { kind: 'ready', message: '世界修订已保存' } });
+      this.refreshInjection();
+      this.panel.notify('世界内容已修改并保存', 'success');
+      return world;
+    } catch (error) {
+      this.panel.notify(`保存失败：${error.message}`, 'error');
+      return null;
+    }
+  }
+
+  async togglePinned(kind, id) {
+    const collection = kind === 'rumor' ? this.world?.rumors : this.world?.events;
+    const item = collection?.find((entry) => entry.id === id);
+    if (!item) return;
+    item.pinned = !item.pinned;
+    if (item.pinned && kind === 'event' && item.status === 'archived') item.status = item.resolvedRound ? 'completed' : 'active';
+    await this.store.save(this.world);
+    this.panel.setData({ world: this.world, settings: this.getSettings(), status: this.status });
+    this.refreshInjection();
+    this.panel.notify(item.pinned ? '已保留，不会被自动归档或消散' : '已取消保留，恢复自然生命周期', 'success');
   }
 
   async resetWorld() {

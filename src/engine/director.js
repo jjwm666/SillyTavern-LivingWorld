@@ -35,6 +35,8 @@ export function buildDirectorBrief(state, conversation = '') {
       round: state.round + 1,
       trends: state.trends,
       economy: state.economy,
+      player: state.player,
+      activeStoryHooks: (state.storyHooks || []).filter((hook) => ['active', 'approaching'].includes(hook.status)),
     },
     latestConversation: text(conversation, 14000),
     regions: state.regions.map((region) => ({
@@ -46,6 +48,9 @@ export function buildDirectorBrief(state, conversation = '') {
       danger: region.danger,
       prosperity: region.prosperity,
       unrest: region.unrest,
+      priceIndex: region.priceIndex,
+      weather: region.weather,
+      children: (region.children || []).map((child) => ({ id: child.id, name: child.name, type: child.type, children: (child.children || []).map((grandchild) => ({ id: grandchild.id, name: grandchild.name, type: grandchild.type })) })),
       neighbors: region.neighbors,
     })),
     factions: state.factions.map((faction) => ({
@@ -136,7 +141,8 @@ export function buildEvolutionPrompt(state, conversation, options = {}) {
   "eventProposals": [{"name":"事件名","description":"起因与潜在影响","type":"conflict|progress","level":1,"regionId":"ID","actorIds":[],"factionIds":[]}],
   "rumorProposals": [{"content":"可能失真的内容","type":"announcement|report|rumor|sentiment","sourceRegionId":"ID","intensity":1}],
   "economicSignal":"可选，可观察到的市场变化",
-  "backgroundSignal":"可选，背景人群的整体动向"
+  "backgroundSignal":"可选，背景人群的整体动向",
+  "playerImpactProposal":{"regionId":"玩家当前所在地区ID；不明确则留空","action":"none|trade|aid|scheme|investigate|travel|rest","factionId":"相关势力ID","amount":1,"summary":"本轮玩家行为对世界造成的可观察影响；不要虚构成败或收益"}
 }
 
 ${customDirectives(options, 'evolutionPrompt')}
@@ -150,7 +156,8 @@ export function buildBootstrapPrompt(material, options = {}) {
   const npcCount = Math.max(8, Math.min(24, options.coreNpcLimit || 14));
   return `把以下角色卡、世界设定与聊天材料转化为可模拟的通用世界。题材可以完全遵从输入，不要擅自改成古代或奇幻。
 只输出合法 JSON，不要 Markdown。所有名称使用设定对应语言，引用 ID 保持一致。
-地图必须有 ${regionCount} 个左右区域，坐标 x 范围 60-940、y 范围 50-510；neighbors 构成连通的路线网络。
+地图必须有 ${regionCount} 个左右大区域，坐标 x 范围 60-940、y 范围 50-510；neighbors 构成连通的路线网络。
+至少两个大区域要包含 children 次级区域，每个 2-4 个；至少一个次级区域还要包含自己的 children 再次级区域。children 元素与区域结构同构，ID 必须全局唯一，同层 neighbors 只引用同层节点。
 势力 ${factionCount} 个左右，核心 NPC ${npcCount} 个左右。NPC 应有各自独立目标，不能都围绕玩家。
 NPC 的 locationId、factionId，势力的 homeRegionId、leaderNpcId，区域的 controlFactionId 必须有效。
 
@@ -159,12 +166,13 @@ NPC 的 locationId、factionId，势力的 homeRegionId、leaderNpcId，区域�
  "name":"世界名","premise":"世界概述","tone":"叙事基调",
  "calendar":{"year":1,"month":1,"day":1,"turnLabel":"初始时间"},
  "trends":[{"name":"时代主线","description":"影响","intensity":3}],
- "regions":[{"id":"region_1","name":"...","type":"...","description":"...","x":100,"y":100,"controlFactionId":"faction_1","resources":[],"danger":3,"prosperity":55,"unrest":15,"population":1000,"neighbors":[{"targetId":"region_2","distance":2,"terrain":"道路"}]}],
+ "regions":[{"id":"region_1","name":"...","type":"...","description":"...","x":100,"y":100,"controlFactionId":"faction_1","resources":[],"danger":3,"prosperity":55,"unrest":15,"population":1000,"priceIndex":100,"weather":{"type":"晴朗","intensity":0,"remaining":3},"children":[],"neighbors":[{"targetId":"region_2","distance":2,"terrain":"道路"}]}],
  "factions":[{"id":"faction_1","name":"...","description":"...","leaderNpcId":"npc_1","homeRegionId":"region_1","resources":{"wealth":50,"influence":50,"manpower":50},"stability":65,"goal":"...","playerRelation":0}],
  "npcs":[{"id":"npc_1","name":"...","role":"...","description":"...","locationId":"region_1","homeRegionId":"region_1","factionId":"faction_1","core":true,"attributes":{"influence":3,"cunning":3,"force":3,"empathy":3,"resources":3},"personality":{"ambition":5,"empathy":5,"caution":5,"loyalty":5},"needs":{"safety":6,"wealth":5,"belonging":5},"mood":{"valence":0,"arousal":3,"label":"平静"},"goals":[{"description":"长期目标","priority":8}],"relationships":{},"memories":[],"secrets":[],"schedule":{"current":"...","next":"..."}}],
  "events":[{"name":"...","description":"...","type":"conflict","level":2,"regionId":"region_1","actorIds":[],"factionIds":[],"requiredProgress":6}],
  "rumors":[{"content":"...","type":"rumor","sourceRegionId":"region_1","intensity":2}],
- "economy":{"climate":"平稳","priceIndex":100,"lastSignal":"..."}
+ "economy":{"climate":"平稳","priceIndex":100,"lastSignal":"..."},
+ "player":{"name":"{{user}}","regionId":"region_1","wealth":100,"reputation":{"authority":0,"common":0,"shadow":0,"circuit":0}}
 }
 
 ${customDirectives(options, 'bootstrapPrompt')}

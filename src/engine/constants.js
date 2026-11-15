@@ -29,6 +29,8 @@ export const PROMPT_PRESETS = Object.freeze({
 
 export const DEFAULT_SETTINGS = Object.freeze({
   autoEvolve: true,
+  evolutionInterval: 1,
+  diceModifier: 0,
   connectionMode: 'st',
   customBaseUrl: '',
   customApiKey: '',
@@ -43,10 +45,15 @@ export const DEFAULT_SETTINGS = Object.freeze({
   backgroundNpcsPerRegion: 120,
   autoBootstrap: true,
   promptPreset: 'balanced',
+  customPromptPresets: [],
   bootstrapPrompt: '',
   evolutionPrompt: '',
   jailbreakPrompt: '',
+  theme: 'dark',
   floatingButton: true,
+  floatingSize: 58,
+  floatingX: null,
+  floatingY: null,
   activeTab: 'overview',
   mapZoom: 1,
   reduceMotion: false,
@@ -54,7 +61,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
 
 export const NPC_ACTIONS = Object.freeze([
   'pursue_goal', 'travel', 'investigate', 'trade', 'aid', 'scheme',
-  'recruit', 'confront', 'spread_rumor', 'rest',
+  'recruit', 'confront', 'spread_rumor', 'rest', 'seek_player',
 ]);
 
 export const FACTION_ACTIONS = Object.freeze([
@@ -91,6 +98,7 @@ export const ACTION_LABELS = Object.freeze({
   confront: '对峙',
   spread_rumor: '传播风声',
   rest: '休整',
+  seek_player: '主动寻找玩家',
   consolidate: '巩固',
   improve_relations: '改善关系',
   pressure: '施压',

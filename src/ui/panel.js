@@ -3,11 +3,12 @@ import { byId, escapeHtml } from '../engine/utils.js';
 import { icon } from './icons.js';
 import {
   renderDice, renderEmpty, renderEvents, renderFactions, renderMap,
-  renderNpcInspector, renderOverview, renderPeople, renderSettings,
+  renderNpcInspector, renderOverview, renderPeople, renderPlayer, renderSettings,
 } from './views.js';
 
 const tabs = [
   ['overview', '总览', 'globe'],
+  ['player', '生涯', 'target'],
   ['people', '人物', 'users'],
   ['map', '地图', 'map'],
   ['factions', '势力', 'factions'],
@@ -28,6 +29,9 @@ export class LivingWorldPanel {
     this.selectedFactionId = null;
     this.peopleSearch = '';
     this.mapZoom = 1;
+    this.mapPath = [];
+    this.diceFilter = 'all';
+    this.pointerGesture = null;
     this.root = null;
     this.opened = false;
     this.handleClick = this.handleClick.bind(this);
@@ -35,6 +39,9 @@ export class LivingWorldPanel {
     this.handleChange = this.handleChange.bind(this);
     this.handleSubmit = this.handleSubmit.bind(this);
     this.handleKeydown = this.handleKeydown.bind(this);
+    this.handlePointerDown = this.handlePointerDown.bind(this);
+    this.handlePointerMove = this.handlePointerMove.bind(this);
+    this.handlePointerUp = this.handlePointerUp.bind(this);
   }
 
   mount() {
@@ -42,7 +49,7 @@ export class LivingWorldPanel {
     this.root = document.createElement('div');
     this.root.id = 'living-world-root';
     this.root.innerHTML = `
-      <button class="lw-floating" data-lw-action="toggle" aria-label="打开万象世界引擎" title="万象世界引擎"><span class="lw-floating-orbit"></span>${icon('globe', 25)}<i class="lw-floating-status"></i></button>
+      <div class="lw-floating-dock"><button class="lw-floating" data-lw-action="toggle" aria-label="打开万象世界引擎；拖动可移动" title="拖动移动 · 右下角调整大小">${icon('globe', 25)}<span class="lw-floating-orbit"></span><i class="lw-floating-status"></i></button><button class="lw-floating-hide" data-lw-action="hide-floating" aria-label="隐藏悬浮按钮" title="隐藏，可从酒馆菜单重新打开">×</button><span class="lw-floating-resize" data-lw-resize aria-label="拖动调整悬浮按钮大小"></span></div>
       <div class="lw-backdrop" data-lw-action="close"></div>
       <section class="lw-shell" role="dialog" aria-modal="true" aria-label="Living World 万象世界引擎">
         <aside class="lw-sidebar">
@@ -63,7 +70,12 @@ export class LivingWorldPanel {
     this.root.addEventListener('input', this.handleInput);
     this.root.addEventListener('change', this.handleChange);
     this.root.addEventListener('submit', this.handleSubmit);
+    this.root.addEventListener('pointerdown', this.handlePointerDown);
+    this.root.addEventListener('pointermove', this.handlePointerMove);
+    this.root.addEventListener('pointerup', this.handlePointerUp);
+    this.root.addEventListener('pointercancel', this.handlePointerUp);
     document.addEventListener('keydown', this.handleKeydown);
+    this.applyAppearance();
     this.render();
     return this;
   }
@@ -74,6 +86,7 @@ export class LivingWorldPanel {
     if (status) this.status = status;
     if (!this.selectedRegionId && this.world) this.selectedRegionId = this.world.player.regionId;
     if (!this.selectedFactionId && this.world) this.selectedFactionId = this.world.factions[0]?.id || null;
+    this.applyAppearance();
     this.render();
   }
 
@@ -117,16 +130,49 @@ export class LivingWorldPanel {
       content.innerHTML = renderEmpty(this.status);
     } else {
       switch (this.activeTab) {
+        case 'player': content.innerHTML = renderPlayer(this.world); break;
         case 'people': content.innerHTML = renderPeople(this.world, this.peopleSearch); break;
-        case 'map': content.innerHTML = renderMap(this.world, this.selectedRegionId, this.mapZoom); break;
+        case 'map': content.innerHTML = renderMap(this.world, this.selectedRegionId, this.mapZoom, this.getMapScope()); break;
         case 'factions': content.innerHTML = renderFactions(this.world, this.selectedFactionId); break;
         case 'events': content.innerHTML = renderEvents(this.world); break;
-        case 'dice': content.innerHTML = renderDice(this.world); break;
-        case 'settings': content.innerHTML = renderSettings(this.settings, this.status); break;
+        case 'dice': content.innerHTML = renderDice(this.world, this.diceFilter); break;
+        case 'settings': content.innerHTML = renderSettings(this.settings, this.status, this.world); break;
         default: content.innerHTML = renderOverview(this.world);
       }
     }
     this.renderInspector();
+  }
+
+  getMapScope() {
+    let regions = this.world?.regions || [];
+    const path = [];
+    for (const id of this.mapPath) {
+      const region = byId(regions, id);
+      if (!region) break;
+      path.push(region);
+      regions = region.children || [];
+    }
+    this.mapPath = path.map((region) => region.id);
+    return { regions, path };
+  }
+
+  applyAppearance() {
+    if (!this.root) return;
+    this.root.dataset.theme = this.settings.theme === 'light' ? 'light' : 'dark';
+    this.root.classList.toggle('lw-floating-hidden', this.settings.floatingButton === false);
+    const dock = this.root.querySelector('.lw-floating-dock');
+    if (!dock) return;
+    const size = Math.max(42, Math.min(88, Number(this.settings.floatingSize) || 58));
+    dock.style.width = `${size}px`;
+    dock.style.height = `${size}px`;
+    if (Number.isFinite(this.settings.floatingX) && Number.isFinite(this.settings.floatingY)) {
+      const x = Math.max(0, Math.min(window.innerWidth - size, this.settings.floatingX));
+      const y = Math.max(0, Math.min(window.innerHeight - size, this.settings.floatingY));
+      dock.style.left = `${x}px`;
+      dock.style.top = `${y}px`;
+      dock.style.right = 'auto';
+      dock.style.bottom = 'auto';
+    }
   }
 
   renderHeader() {
@@ -158,7 +204,15 @@ export class LivingWorldPanel {
     const target = event.target.closest('[data-lw-action]');
     if (!target || !this.root.contains(target)) return;
     const action = target.dataset.lwAction;
-    if (action === 'toggle') return this.toggle();
+    if (action === 'toggle') {
+      if (this.suppressFloatingClick) { this.suppressFloatingClick = false; return; }
+      return this.toggle();
+    }
+    if (action === 'hide-floating') {
+      await this.callbacks.onSettingsChange?.({ floatingButton: false });
+      this.notify('悬浮按钮已隐藏，可在设置或酒馆菜单中重新打开');
+      return;
+    }
     if (action === 'close') return this.close();
     if (action === 'close-inspector') {
       this.selectedNpcId = null;
@@ -183,8 +237,53 @@ export class LivingWorldPanel {
     }
     if (action === 'region-select') {
       this.selectedRegionId = target.dataset.id;
-      if (this.activeTab !== 'map') this.activeTab = 'map';
+      if (this.activeTab !== 'map') { this.activeTab = 'map'; this.mapPath = []; }
       this.render();
+      return;
+    }
+    if (action === 'region-open') {
+      this.activeTab = 'map';
+      this.mapPath = [];
+      this.selectedRegionId = target.dataset.id;
+      this.render();
+      return;
+    }
+    if (action === 'region-enter') {
+      const { regions } = this.getMapScope();
+      const region = byId(regions, target.dataset.id);
+      if (region?.children?.length) {
+        this.mapPath.push(region.id);
+        this.selectedRegionId = region.children[0].id;
+        this.mapZoom = 1;
+        this.render();
+      }
+      return;
+    }
+    if (action === 'map-root' || action === 'map-path') {
+      this.mapPath = action === 'map-root' ? [] : this.mapPath.slice(0, Number(target.dataset.depth) + 1);
+      const scope = this.getMapScope();
+      this.selectedRegionId = scope.regions[0]?.id || scope.path.at(-1)?.id || null;
+      this.render();
+      return;
+    }
+    if (action === 'faction-open') {
+      this.activeTab = 'factions';
+      this.selectedFactionId = target.dataset.id;
+      this.render();
+      return;
+    }
+    if (action === 'dice-filter') {
+      this.diceFilter = target.dataset.filter || 'all';
+      this.render();
+      return;
+    }
+    if (action === 'toggle-pin') {
+      await this.callbacks.onTogglePin?.(target.dataset.kind, target.dataset.id);
+      return;
+    }
+    if (action === 'save-world-editor') {
+      const raw = this.root.querySelector('[data-lw-world-editor]')?.value || '';
+      await this.callbacks.onEditWorld?.(raw);
       return;
     }
     if (action === 'faction-select') {
@@ -199,10 +298,36 @@ export class LivingWorldPanel {
     }
     if (action === 'apply-prompt-preset') {
       const presetId = this.root.querySelector('[name="promptPreset"]')?.value || 'balanced';
-      const preset = PROMPT_PRESETS[presetId] || PROMPT_PRESETS.balanced;
-      this.root.querySelector('[name="bootstrapPrompt"]').value = preset.bootstrapPrompt;
-      this.root.querySelector('[name="evolutionPrompt"]').value = preset.evolutionPrompt;
+      const customPresets = Array.isArray(this.settings.customPromptPresets) ? this.settings.customPromptPresets : [];
+      const preset = PROMPT_PRESETS[presetId] || customPresets.find((item) => item.id === presetId) || PROMPT_PRESETS.balanced;
+      this.root.querySelector('[name="bootstrapPrompt"]').value = preset.bootstrapPrompt || '';
+      this.root.querySelector('[name="evolutionPrompt"]').value = preset.evolutionPrompt || '';
+      this.root.querySelector('[name="jailbreakPrompt"]').value = preset.jailbreakPrompt || '';
       this.notify(`已载入“${preset.name}”，保存设置后生效`);
+      return;
+    }
+    if (action === 'save-prompt-preset') {
+      const nameInput = this.root.querySelector('[name="newPromptPresetName"]');
+      const name = String(nameInput?.value || '').trim();
+      if (!name) { this.notify('请先填写新预设名称', 'error'); return; }
+      const customPresets = Array.isArray(this.settings.customPromptPresets) ? this.settings.customPromptPresets : [];
+      const id = `custom_${Date.now()}`;
+      const preset = {
+        id, name,
+        bootstrapPrompt: this.root.querySelector('[name="bootstrapPrompt"]')?.value || '',
+        evolutionPrompt: this.root.querySelector('[name="evolutionPrompt"]')?.value || '',
+        jailbreakPrompt: this.root.querySelector('[name="jailbreakPrompt"]')?.value || '',
+      };
+      await this.callbacks.onSettingsChange?.({ customPromptPresets: [...customPresets.filter((item) => item.name !== name), preset], promptPreset: id });
+      this.notify(`自定义预设“${name}”已保存`, 'success');
+      return;
+    }
+    if (action === 'delete-prompt-preset') {
+      const presetId = this.root.querySelector('[name="promptPreset"]')?.value;
+      const customPresets = Array.isArray(this.settings.customPromptPresets) ? this.settings.customPromptPresets : [];
+      if (!customPresets.some((item) => item.id === presetId)) { this.notify('请先在预设列表中选择一个自定义预设', 'error'); return; }
+      await this.callbacks.onSettingsChange?.({ customPromptPresets: customPresets.filter((item) => item.id !== presetId), promptPreset: 'balanced' });
+      this.notify('自定义预设已删除', 'success');
       return;
     }
     if (action === 'import') {
@@ -255,6 +380,11 @@ export class LivingWorldPanel {
       customApiKey: String(data.get('customApiKey') || ''),
       customModel: String(data.get('customModel') || '').trim(),
       autoEvolve: data.has('autoEvolve'),
+      evolutionInterval: Math.max(1, Math.min(20, Number(data.get('evolutionInterval')) || 1)),
+      diceModifier: Math.max(-10, Math.min(10, Number(data.get('diceModifier')) || 0)),
+      theme: data.get('theme') === 'light' ? 'light' : 'dark',
+      floatingButton: data.has('floatingButton'),
+      floatingSize: Math.max(42, Math.min(88, Number(data.get('floatingSize')) || 58)),
       autoBootstrap: data.has('autoBootstrap'),
       includeSecrets: data.has('includeSecrets'),
       promptPreset: String(data.get('promptPreset') || 'balanced'),
@@ -267,6 +397,75 @@ export class LivingWorldPanel {
       requestTimeout: Number(data.get('requestTimeout')),
     };
     this.settings = { ...this.settings, ...settings };
+    await this.callbacks.onSettingsChange?.(settings);
+  }
+
+  handlePointerDown(event) {
+    if (event.button !== 0) return;
+    const resize = event.target.closest('[data-lw-resize]');
+    const floating = event.target.closest('.lw-floating');
+    if (!resize && !floating) return;
+    const dock = this.root.querySelector('.lw-floating-dock');
+    const rect = dock.getBoundingClientRect();
+    this.pointerGesture = {
+      id: event.pointerId,
+      type: resize ? 'resize' : 'drag',
+      startX: event.clientX,
+      startY: event.clientY,
+      left: rect.left,
+      top: rect.top,
+      size: rect.width,
+      moved: false,
+    };
+    event.target.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  }
+
+  handlePointerMove(event) {
+    const gesture = this.pointerGesture;
+    if (!gesture || gesture.id !== event.pointerId) return;
+    const dx = event.clientX - gesture.startX;
+    const dy = event.clientY - gesture.startY;
+    if (Math.abs(dx) + Math.abs(dy) > 4) gesture.moved = true;
+    const dock = this.root.querySelector('.lw-floating-dock');
+    if (gesture.type === 'resize') {
+      const size = Math.max(42, Math.min(88, gesture.size + (dx + dy) / 2));
+      const x = Math.max(0, Math.min(gesture.left, window.innerWidth - size));
+      const y = Math.max(0, Math.min(gesture.top, window.innerHeight - size));
+      dock.style.width = `${size}px`;
+      dock.style.height = `${size}px`;
+      dock.style.left = `${x}px`;
+      dock.style.top = `${y}px`;
+      dock.style.right = 'auto';
+      dock.style.bottom = 'auto';
+      gesture.currentSize = size;
+      gesture.currentX = x;
+      gesture.currentY = y;
+    } else {
+      const x = Math.max(0, Math.min(window.innerWidth - gesture.size, gesture.left + dx));
+      const y = Math.max(0, Math.min(window.innerHeight - gesture.size, gesture.top + dy));
+      dock.style.left = `${x}px`;
+      dock.style.top = `${y}px`;
+      dock.style.right = 'auto';
+      dock.style.bottom = 'auto';
+      gesture.currentX = x;
+      gesture.currentY = y;
+    }
+  }
+
+  async handlePointerUp(event) {
+    const gesture = this.pointerGesture;
+    if (!gesture || gesture.id !== event.pointerId) return;
+    this.pointerGesture = null;
+    if (!gesture.moved) return;
+    this.suppressFloatingClick = true;
+    const settings = gesture.type === 'resize'
+      ? {
+        floatingSize: Math.round(gesture.currentSize || gesture.size),
+        floatingX: Math.round(gesture.currentX ?? gesture.left),
+        floatingY: Math.round(gesture.currentY ?? gesture.top),
+      }
+      : { floatingX: Math.round(gesture.currentX ?? gesture.left), floatingY: Math.round(gesture.currentY ?? gesture.top) };
     await this.callbacks.onSettingsChange?.(settings);
   }
 
@@ -288,6 +487,10 @@ export class LivingWorldPanel {
     clearTimeout(this.toastTimer);
     clearTimeout(this.searchTimer);
     document.removeEventListener('keydown', this.handleKeydown);
+    this.root?.removeEventListener('pointerdown', this.handlePointerDown);
+    this.root?.removeEventListener('pointermove', this.handlePointerMove);
+    this.root?.removeEventListener('pointerup', this.handlePointerUp);
+    this.root?.removeEventListener('pointercancel', this.handlePointerUp);
     this.root?.remove();
     this.root = null;
   }

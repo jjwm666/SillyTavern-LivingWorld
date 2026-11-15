@@ -44,6 +44,7 @@ export function rollCheck(rng, {
   difficulty = 10,
   reason = '',
   sequence = 0,
+  regionId = '',
 } = {}) {
   const roll = rng.int(1, 20);
   const safeModifier = integer(modifier, 0, -20, 20);
@@ -58,6 +59,7 @@ export function rollCheck(rng, {
     actorId,
     action,
     reason,
+    regionId: regionId || null,
     formula: `1d20${safeModifier >= 0 ? '+' : ''}${safeModifier} vs ${safeDifficulty}`,
     roll,
     sides: 20,
