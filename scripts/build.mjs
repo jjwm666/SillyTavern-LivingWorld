@@ -20,7 +20,7 @@ let result;
 if (process.platform === 'win32') {
   result = spawnSync('tar', ['-a', '-c', '-f', archive, '-C', 'dist', 'LivingWorld'], { stdio: 'inherit' });
 } else {
-  result = spawnSync('zip', ['-qr', archive, 'LivingWorld'], { cwd: '.', stdio: 'inherit' });
+  result = spawnSync('zip', ['-qr', `LivingWorld-v${manifest.version}.zip`, 'LivingWorld'], { cwd: 'dist', stdio: 'inherit' });
 }
 if (result.error || result.status !== 0) {
   console.warn('ZIP creation unavailable; the dist/LivingWorld directory is ready for release.');
