@@ -205,7 +205,7 @@ class LivingWorldController {
       try {
         this.abortController = new AbortController();
         const conversation = extractRecentConversation(this.context().chat);
-        proposal = await this.api.completeJson(buildEvolutionPrompt(before, conversation), {
+        proposal = await this.api.completeJson(buildEvolutionPrompt(before, conversation, this.getSettings()), {
           signal: this.abortController.signal,
           systemPrompt: '你是多主体世界的意图导演。只输出合法 JSON，不判定行动结果。',
         });

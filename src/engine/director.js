@@ -108,7 +108,14 @@ export function buildDirectorBrief(state, conversation = '') {
   };
 }
 
-export function buildEvolutionPrompt(state, conversation) {
+function customDirectives(options, key) {
+  const specific = text(options?.[key], 6000);
+  const jailbreak = text(options?.jailbreakPrompt, 6000);
+  if (!specific && !jailbreak) return '';
+  return `\n\n用户自定义创作指令（仍须遵守上述 JSON 结构与本地判定边界）：\n${specific}${specific && jailbreak ? '\n' : ''}${jailbreak}`;
+}
+
+export function buildEvolutionPrompt(state, conversation, options = {}) {
   const brief = buildDirectorBrief(state, conversation);
   return `你是多主体世界的“意图导演”，不是判定器，也不能直接修改世界数值。
 根据最新对话和每个角色的有限认知，为世界下一轮提出行动意图。
@@ -131,6 +138,8 @@ export function buildEvolutionPrompt(state, conversation) {
   "economicSignal":"可选，可观察到的市场变化",
   "backgroundSignal":"可选，背景人群的整体动向"
 }
+
+${customDirectives(options, 'evolutionPrompt')}
 
 世界输入：\n${JSON.stringify(brief)}`;
 }
@@ -157,6 +166,8 @@ NPC 的 locationId、factionId，势力的 homeRegionId、leaderNpcId，区域�
  "rumors":[{"content":"...","type":"rumor","sourceRegionId":"region_1","intensity":2}],
  "economy":{"climate":"平稳","priceIndex":100,"lastSignal":"..."}
 }
+
+${customDirectives(options, 'bootstrapPrompt')}
 
 原始材料：\n${text(material, 30000)}`;
 }

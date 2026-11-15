@@ -352,7 +352,15 @@
 .lw-custom-api.muted { opacity: .35; pointer-events: none; }
 .lw-settings-section label:not(.lw-toggle-row):not(.lw-segmented label) { color: var(--lw-muted); font-size: 9px; }
 .lw-settings-section input:not([type="checkbox"]):not([type="radio"]) { width: 100%; height: 34px; margin-top: 4px; padding: 0 9px; border: 1px solid var(--lw-line); border-radius: 6px; outline: none; background: var(--lw-bg); color: var(--lw-text); font-size: 10px; }
-.lw-settings-section input:focus { border-color: var(--lw-teal); }
+.lw-settings-section input:focus, .lw-settings-section select:focus, .lw-settings-section textarea:focus { border-color: var(--lw-teal); }
+.lw-prompt-section { grid-column: 1 / -1; }
+.lw-preset-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; margin-bottom: 14px; }
+.lw-prompt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.lw-prompt-wide { grid-column: 1 / -1; }
+.lw-settings-section select, .lw-settings-section textarea { width: 100%; margin-top: 5px; border: 1px solid var(--lw-line); border-radius: 6px; outline: none; background: var(--lw-bg); color: var(--lw-text); font: inherit; font-size: 10px; }
+.lw-settings-section select { height: 36px; padding: 0 9px; }
+.lw-settings-section textarea { min-height: 86px; padding: 10px; line-height: 1.7; resize: vertical; }
+.lw-settings-section textarea::placeholder { color: var(--lw-faint); }
 .lw-field-help { margin-top: 10px; color: var(--lw-faint); font-size: 9px; line-height: 1.7; }
 .lw-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .lw-settings-actions { display: flex; flex-wrap: wrap; gap: 7px; }
@@ -475,7 +483,8 @@
   .lw-empty { padding: 20px 5px; }
   .lw-empty h2 { font-size: 24px; }
   .lw-empty-features { gap: 12px; }
-  .lw-field-grid { grid-template-columns: 1fr; }
+  .lw-field-grid, .lw-prompt-grid { grid-template-columns: 1fr; }
+  .lw-prompt-wide { grid-column: 1; }
   .lw-settings-footer { grid-column: 1; }
   .lw-settings-footer .lw-button { width: 100%; }
 }

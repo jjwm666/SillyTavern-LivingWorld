@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS } from '../engine/constants.js';
+import { DEFAULT_SETTINGS, PROMPT_PRESETS } from '../engine/constants.js';
 import { byId, escapeHtml } from '../engine/utils.js';
 import { icon } from './icons.js';
 import {
@@ -197,6 +197,14 @@ export class LivingWorldPanel {
       this.render();
       return;
     }
+    if (action === 'apply-prompt-preset') {
+      const presetId = this.root.querySelector('[name="promptPreset"]')?.value || 'balanced';
+      const preset = PROMPT_PRESETS[presetId] || PROMPT_PRESETS.balanced;
+      this.root.querySelector('[name="bootstrapPrompt"]').value = preset.bootstrapPrompt;
+      this.root.querySelector('[name="evolutionPrompt"]').value = preset.evolutionPrompt;
+      this.notify(`已载入“${preset.name}”，保存设置后生效`);
+      return;
+    }
     if (action === 'import') {
       this.root.querySelector('#lw-import-file').click();
       return;
@@ -249,6 +257,10 @@ export class LivingWorldPanel {
       autoEvolve: data.has('autoEvolve'),
       autoBootstrap: data.has('autoBootstrap'),
       includeSecrets: data.has('includeSecrets'),
+      promptPreset: String(data.get('promptPreset') || 'balanced'),
+      bootstrapPrompt: String(data.get('bootstrapPrompt') || '').trim(),
+      evolutionPrompt: String(data.get('evolutionPrompt') || '').trim(),
+      jailbreakPrompt: String(data.get('jailbreakPrompt') || '').trim(),
       coreNpcLimit: Number(data.get('coreNpcLimit')),
       injectMaxChars: Number(data.get('injectMaxChars')),
       maxTokens: Number(data.get('maxTokens')),

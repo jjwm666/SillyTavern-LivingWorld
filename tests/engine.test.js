@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDemoWorld } from '../src/engine/demo-world.js';
-import { buildDirectorBrief, heuristicProposal } from '../src/engine/director.js';
+import { buildBootstrapPrompt, buildDirectorBrief, buildEvolutionPrompt, heuristicProposal } from '../src/engine/director.js';
 import { evolveWorld } from '../src/engine/simulation.js';
 import { byId, safeJsonParse } from '../src/engine/utils.js';
 import { buildWorldContext } from '../src/integration/context.js';
@@ -100,4 +100,26 @@ test('secret injection is explicit and context respects its budget', () => {
 test('JSON parser accepts plain objects and fenced model output', () => {
   assert.deepEqual(safeJsonParse('```json\n{"ok":true}\n```'), { ok: true });
   assert.deepEqual(safeJsonParse('prefix {"value":2} suffix'), { value: 2 });
+});
+
+test('custom prompt presets reach only their intended backend requests', () => {
+  const world = createDemoWorld();
+  const evolution = buildEvolutionPrompt(world, 'recent chat', {
+    evolutionPrompt: 'EVOLUTION_CUSTOM_DIRECTIVE',
+    bootstrapPrompt: 'BOOTSTRAP_ONLY_DIRECTIVE',
+    jailbreakPrompt: 'CUSTOM_CREATIVE_DIRECTIVE',
+  });
+  assert.ok(evolution.includes('EVOLUTION_CUSTOM_DIRECTIVE'));
+  assert.ok(evolution.includes('CUSTOM_CREATIVE_DIRECTIVE'));
+  assert.ok(!evolution.includes('BOOTSTRAP_ONLY_DIRECTIVE'));
+
+  const bootstrap = buildBootstrapPrompt('character card', {
+    bootstrapPrompt: 'BOOTSTRAP_ONLY_DIRECTIVE',
+    evolutionPrompt: 'EVOLUTION_ONLY_DIRECTIVE',
+    jailbreakPrompt: 'CUSTOM_CREATIVE_DIRECTIVE',
+  });
+  assert.ok(bootstrap.includes('BOOTSTRAP_ONLY_DIRECTIVE'));
+  assert.ok(bootstrap.includes('CUSTOM_CREATIVE_DIRECTIVE'));
+  assert.ok(!bootstrap.includes('EVOLUTION_ONLY_DIRECTIVE'));
+  assert.ok(!buildWorldContext(world).includes('CUSTOM_CREATIVE_DIRECTIVE'));
 });

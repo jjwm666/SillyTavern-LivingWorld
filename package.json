@@ -1,6 +1,6 @@
 {
   "name": "sillytavern-living-world",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A persistent, map-driven multi-agent world simulation extension for SillyTavern",
   "type": "module",
   "private": true,
