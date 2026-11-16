@@ -73,7 +73,9 @@ https://github.com/jjwm666/SillyTavern-LivingWorld
 
 ### 独立 OpenAI 兼容接口
 
-填写 Base URL、API Key 和模型名。插件请求 `/chat/completions`，要求模型能够遵循 JSON 输出提示。API Key 保存在酒馆扩展设置中，不会写入世界存档、聊天注入或导出的世界文件。
+填写 Base URL、API Key 和模型名。点击“拉取模型列表”会请求 `/models` 验证连通性并自动填入模型名下拉框；点击“测试连接”会真实生成一次 JSON 验证完整链路。插件请求 `/chat/completions`，要求模型能够遵循 JSON 输出提示。API Key 保存在酒馆扩展设置中，不会写入世界存档、聊天注入或导出的世界文件。
+
+世界推演进行中时，可点击面板顶部的停止按钮或设置页的“取消后台推演”立即中止；推演完成、失败或被取消时，酒馆会弹出全局通知，无需保持面板打开。
 
 ## 项目结构
 

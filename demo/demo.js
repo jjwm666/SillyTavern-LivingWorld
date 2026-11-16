@@ -52,6 +52,11 @@ const panel = new LivingWorldPanel({
     panel.setData({ world: null, status: { kind: 'idle', message: '演示世界已清除' } });
   },
   onTestApi: () => panel.notify('演示模式不会发起真实 API 请求'),
+  onCancelEvolution: () => panel.notify('演示模式没有进行中的后台推演'),
+  onFetchModels: async () => {
+    panel.notify('演示模式不会请求模型列表');
+    return [];
+  },
 });
 
 panel.mount();

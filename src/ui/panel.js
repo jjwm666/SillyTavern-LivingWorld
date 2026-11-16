@@ -58,7 +58,7 @@ export class LivingWorldPanel {
           <div class="lw-sidebar-foot"><span class="lw-engine-pulse"></span><div><strong>LOCAL RULE ENGINE</strong><small>意图由模型提出 · 结果由规则判定</small></div></div>
         </aside>
         <div class="lw-workspace">
-          <header class="lw-header"><div class="lw-header-world"><button class="lw-icon-button lw-mobile-menu" data-lw-action="toggle-nav" aria-label="切换导航">${icon('menu')}</button><div><span class="lw-kicker">WORLD OBSERVATORY</span><h1 id="lw-world-title">尚未初始化世界</h1></div></div><div class="lw-header-actions"><span id="lw-run-status" class="lw-run-status"><i></i><span>待命</span></span><button class="lw-icon-button" data-lw-action="evolve" title="立即推演一轮">${icon('play')}</button><button class="lw-icon-button" data-lw-action="close" aria-label="关闭">${icon('close')}</button></div></header>
+          <header class="lw-header"><div class="lw-header-world"><button class="lw-icon-button lw-mobile-menu" data-lw-action="toggle-nav" aria-label="切换导航">${icon('menu')}</button><div><span class="lw-kicker">WORLD OBSERVATORY</span><h1 id="lw-world-title">尚未初始化世界</h1></div></div><div class="lw-header-actions"><span id="lw-run-status" class="lw-run-status"><i></i><span>待命</span></span><button class="lw-icon-button" data-lw-action="evolve" title="立即推演一轮">${icon('play')}</button><button class="lw-icon-button" data-lw-action="cancel-evolve" title="取消后台推演" disabled>${icon('stop')}</button><button class="lw-icon-button" data-lw-action="close" aria-label="关闭">${icon('close')}</button></div></header>
           <main id="lw-content" class="lw-content"></main>
         </div>
         <aside id="lw-inspector" class="lw-inspector" aria-label="人物详情"><button class="lw-icon-button lw-inspector-close" data-lw-action="close-inspector" aria-label="关闭详情">${icon('close')}</button><div id="lw-inspector-body"></div></aside>
@@ -189,6 +189,8 @@ export class LivingWorldPanel {
       button.classList.toggle('active', button.dataset.tab === this.activeTab);
     }
     this.root.querySelector('.lw-floating')?.classList.toggle('running', this.status.kind === 'running');
+    const cancel = this.root.querySelector('.lw-header-actions [data-lw-action="cancel-evolve"]');
+    if (cancel) cancel.disabled = this.status.kind !== 'running';
   }
 
   renderInspector() {
@@ -334,6 +336,22 @@ export class LivingWorldPanel {
       this.root.querySelector('#lw-import-file').click();
       return;
     }
+    if (action === 'fetch-models') {
+      const form = this.root.querySelector('#lw-settings-form');
+      const data = form ? new FormData(form) : new FormData();
+      const models = await this.callbacks.onFetchModels?.({
+        customBaseUrl: String(data.get('customBaseUrl') || '').trim(),
+        customApiKey: String(data.get('customApiKey') || ''),
+        customModel: String(data.get('customModel') || '').trim(),
+      });
+      if (Array.isArray(models) && models.length) {
+        const datalist = this.root.querySelector('#lw-model-list');
+        if (datalist) datalist.innerHTML = models.map((id) => `<option value="${escapeHtml(id)}"></option>`).join('');
+        const input = this.root.querySelector('[name="customModel"]');
+        if (input && !input.value.trim()) input.value = models[0];
+      }
+      return;
+    }
     if (action === 'initialize' && this.world && !window.confirm('重新初始化会替换当前聊天的世界。建议先导出存档，是否继续？')) return;
     if (action === 'reset' && !window.confirm('确定清除当前聊天的世界、骰点和检查点吗？此操作不可撤销。')) return;
     const callback = {
@@ -342,6 +360,7 @@ export class LivingWorldPanel {
       export: this.callbacks.onExport,
       reset: this.callbacks.onReset,
       'test-api': this.callbacks.onTestApi,
+      'cancel-evolve': this.callbacks.onCancelEvolution,
     }[action];
     if (callback) await callback();
   }

@@ -36,6 +36,8 @@ class LivingWorldController {
       onTogglePin: (kind, id) => this.togglePinned(kind, id),
       onReset: () => this.resetWorld(),
       onTestApi: () => this.testApi(),
+      onCancelEvolution: () => this.cancelEvolution(),
+      onFetchModels: (patch) => this.fetchModels(patch),
     });
   }
 
@@ -101,6 +103,43 @@ class LivingWorldController {
     this.panel.setStatus(this.status);
   }
 
+  announce(message, tone = 'info') {
+    this.panel.notify(message, tone);
+    const toastr = this.context()?.toastr || globalThis.toastr;
+    if (!toastr) return;
+    const method = ['success', 'error', 'warning', 'info'].includes(tone) ? tone : 'info';
+    toastr[method]?.(String(message), '万象世界引擎');
+  }
+
+  cancelEvolution() {
+    if (!this.evolutionPromise) {
+      this.panel.notify('当前没有正在进行的后台推演');
+      return;
+    }
+    this.abortController?.abort();
+    this.setStatus(this.world ? 'ready' : 'idle', '已取消后台推演，世界保持原状');
+    this.announce('已取消本次后台推演，未写入新世界状态', 'info');
+  }
+
+  async fetchModels(patch = {}) {
+    if (patch && typeof patch === 'object') {
+      Object.assign(this.getSettings(), patch);
+      await this.context().saveSettingsDebounced?.();
+      this.panel.setData({ settings: this.getSettings() });
+    }
+    this.setStatus('running', '正在拉取模型列表');
+    try {
+      const models = await this.api.listModels();
+      this.setStatus('ready', `连接成功，发现 ${models.length} 个模型`);
+      this.announce(`连接成功，发现 ${models.length} 个模型，已填入“模型名”下拉列表`, 'success');
+      return models;
+    } catch (error) {
+      this.setStatus('error', error.message);
+      this.announce(`拉取模型失败：${error.message}`, 'error');
+      return null;
+    }
+  }
+
   refreshInjection() {
     const context = this.context();
     if (!context.setExtensionPrompt) return;
@@ -156,12 +195,12 @@ class LivingWorldController {
         this.setStatus('ready', `已建立 ${world.npcs.length} 名人物与 ${world.regions.length} 个区域`);
         this.panel.setData({ world, settings: this.getSettings(), status: this.status });
         this.refreshInjection();
-        this.panel.notify('世界初始化完成，可以开始正常扮演', 'success');
+        this.announce('世界初始化完成，可以开始正常扮演', 'success');
         return world;
       } catch (error) {
         if (token === this.chatToken && error?.name !== 'AbortError') {
           this.setStatus('error', error.message);
-          this.panel.notify(`初始化失败：${error.message}`, 'error');
+          this.announce(`初始化失败：${error.message}`, 'error');
         }
         return null;
       } finally {
@@ -257,7 +296,7 @@ class LivingWorldController {
       this.setStatus(warning ? 'error' : 'ready', warning || `第 ${world.round} 轮完成：${world.lastEvolution.diceRolls} 次判定`);
       this.panel.setData({ world, settings: this.getSettings(), status: this.status });
       this.refreshInjection();
-      this.panel.notify(warning || `第 ${world.round} 轮世界推演完成`, warning ? 'error' : 'success');
+      this.announce(warning || `第 ${world.round} 轮世界推演完成：${world.lastEvolution.diceRolls} 次判定`, warning ? 'error' : 'success');
       return world;
     })();
     this.evolutionPromise = task;
@@ -266,7 +305,7 @@ class LivingWorldController {
     } catch (error) {
       if (token === this.chatToken) {
         this.setStatus('error', error.message);
-        this.panel.notify(`推演失败：${error.message}`, 'error');
+        this.announce(`推演失败：${error.message}`, 'error');
       }
       return null;
     } finally {
@@ -365,10 +404,10 @@ class LivingWorldController {
     try {
       await this.api.testConnection();
       this.setStatus('ready', 'API 连接正常');
-      this.panel.notify('API 连接与 JSON 返回正常', 'success');
+      this.announce('API 连接与 JSON 返回正常', 'success');
     } catch (error) {
       this.setStatus('error', error.message);
-      this.panel.notify(`API 测试失败：${error.message}`, 'error');
+      this.announce(`API 测试失败：${error.message}`, 'error');
     }
   }
 }
