@@ -24,6 +24,7 @@ const paths = {
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   alert: '<path d="M12 3 2 21h20zM12 9v5M12 18h.01"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
 };
 
 export function icon(name, size = 18, className = '') {
