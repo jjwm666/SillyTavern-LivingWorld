@@ -1,4 +1,5 @@
 import { CHECKPOINT_KEY, SCHEMA_VERSION, STORAGE_KEY } from '../engine/constants.js';
+import { isNewerThanSupported, migrateCheckpoints, migrateWorld } from '../engine/migrations.js';
 import { normalizeWorld } from '../engine/state.js';
 import { deepClone, safeJsonParse } from '../engine/utils.js';
 
@@ -43,6 +44,7 @@ export class WorldStore {
     this.getContext = getContext;
     this.db = null;
     this.memory = new Map();
+    this.lastMigration = null;
   }
 
   async hydrate() {
@@ -87,8 +89,15 @@ export class WorldStore {
     if (!raw) return null;
     try {
       const parsed = typeof raw === 'string' ? safeJsonParse(raw) : raw;
-      if (!parsed || (parsed.schemaVersion || 1) > SCHEMA_VERSION) throw new Error('存档版本过新');
-      return normalizeWorld(parsed);
+      if (!parsed) return null;
+      if (isNewerThanSupported(parsed)) throw new Error('存档版本过新');
+      const migration = migrateWorld(parsed);
+      const world = normalizeWorld(migration.world);
+      if (migration.migrated) {
+        this.lastMigration = { from: migration.fromVersion, to: migration.toVersion };
+        await this.save(world);
+      }
+      return world;
     } catch {
       return null;
     }
@@ -105,7 +114,9 @@ export class WorldStore {
   }
 
   checkpoints() {
-    return this.getContext()?.chatMetadata?.[CHECKPOINT_KEY] || [];
+    const raw = this.getContext()?.chatMetadata?.[CHECKPOINT_KEY] || [];
+    // 检查点里也存着世界状态：老存档的回滚必须能读，所以这里同样走迁移。
+    return migrateCheckpoints(raw);
   }
 
   async saveCheckpoint(messageIndex, turnKey, before, state) {

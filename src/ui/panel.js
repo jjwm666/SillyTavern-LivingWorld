@@ -2,6 +2,7 @@ import { DEFAULT_SETTINGS, PROMPT_PRESETS } from '../engine/constants.js';
 import { byId, escapeHtml } from '../engine/utils.js';
 import { icon } from './icons.js';
 import {
+  MAP_MAX_SCALE, MAP_MIN_SCALE, normalizeMapView,
   renderDice, renderEmpty, renderEvents, renderFactions, renderMap,
   renderNpcInspector, renderOverview, renderPeople, renderPlayer, renderSettings,
 } from './views.js';
@@ -28,7 +29,9 @@ export class LivingWorldPanel {
     this.selectedRegionId = null;
     this.selectedFactionId = null;
     this.peopleSearch = '';
-    this.mapZoom = 1;
+    this.peopleMode = 'list';
+    this.peopleFocusId = null;
+    this.mapView = normalizeMapView({});
     this.mapPath = [];
     this.diceFilter = 'all';
     this.pointerGesture = null;
@@ -42,6 +45,8 @@ export class LivingWorldPanel {
     this.handlePointerDown = this.handlePointerDown.bind(this);
     this.handlePointerMove = this.handlePointerMove.bind(this);
     this.handlePointerUp = this.handlePointerUp.bind(this);
+    this.handleWheel = this.handleWheel.bind(this);
+    this.handleDoubleClick = this.handleDoubleClick.bind(this);
   }
 
   mount() {
@@ -74,6 +79,8 @@ export class LivingWorldPanel {
     this.root.addEventListener('pointermove', this.handlePointerMove);
     this.root.addEventListener('pointerup', this.handlePointerUp);
     this.root.addEventListener('pointercancel', this.handlePointerUp);
+    this.root.addEventListener('wheel', this.handleWheel, { passive: false });
+    this.root.addEventListener('dblclick', this.handleDoubleClick);
     document.addEventListener('keydown', this.handleKeydown);
     this.applyAppearance();
     this.render();
@@ -131,8 +138,8 @@ export class LivingWorldPanel {
     } else {
       switch (this.activeTab) {
         case 'player': content.innerHTML = renderPlayer(this.world); break;
-        case 'people': content.innerHTML = renderPeople(this.world, this.peopleSearch); break;
-        case 'map': content.innerHTML = renderMap(this.world, this.selectedRegionId, this.mapZoom, this.getMapScope()); break;
+        case 'people': content.innerHTML = renderPeople(this.world, this.peopleSearch, this.peopleMode, this.peopleFocusId); break;
+        case 'map': content.innerHTML = renderMap(this.world, this.selectedRegionId, this.mapView, this.getMapScope()); break;
         case 'factions': content.innerHTML = renderFactions(this.world, this.selectedFactionId); break;
         case 'events': content.innerHTML = renderEvents(this.world); break;
         case 'dice': content.innerHTML = renderDice(this.world, this.diceFilter); break;
@@ -226,6 +233,7 @@ export class LivingWorldPanel {
       return;
     }
     if (action === 'tab') {
+      if (target.dataset.tab !== 'people') this.peopleFocusId = null;
       this.activeTab = target.dataset.tab;
       this.selectedNpcId = null;
       this.root.classList.remove('lw-nav-open');
@@ -235,6 +243,19 @@ export class LivingWorldPanel {
     if (action === 'npc-select') {
       this.selectedNpcId = target.dataset.id;
       this.renderInspector();
+      return;
+    }
+    if (action === 'people-mode') {
+      this.peopleMode = target.dataset.mode === 'graph' ? 'graph' : 'list';
+      if (this.peopleMode === 'list') this.peopleFocusId = null;
+      this.render();
+      return;
+    }
+    if (action === 'npc-focus') {
+      const id = target.dataset.id;
+      this.peopleFocusId = this.peopleFocusId === id ? null : id;
+      this.selectedNpcId = this.peopleFocusId;
+      this.render();
       return;
     }
     if (action === 'region-select') {
@@ -256,7 +277,7 @@ export class LivingWorldPanel {
       if (region?.children?.length) {
         this.mapPath.push(region.id);
         this.selectedRegionId = region.children[0].id;
-        this.mapZoom = 1;
+        this.mapView = normalizeMapView({});
         this.render();
       }
       return;
@@ -294,8 +315,12 @@ export class LivingWorldPanel {
       return;
     }
     if (action === 'map-zoom-in' || action === 'map-zoom-out') {
-      this.mapZoom = Math.max(0.8, Math.min(2, this.mapZoom + (action === 'map-zoom-in' ? 0.2 : -0.2)));
-      this.render();
+      this.zoomMapBy(action === 'map-zoom-in' ? 1.25 : 0.8);
+      return;
+    }
+    if (action === 'map-zoom-reset') {
+      this.mapView = normalizeMapView({});
+      this.applyMapViewport();
       return;
     }
     if (action === 'apply-prompt-preset') {
@@ -412,6 +437,22 @@ export class LivingWorldPanel {
       jailbreakPrompt: String(data.get('jailbreakPrompt') || '').trim(),
       coreNpcLimit: Number(data.get('coreNpcLimit')),
       injectMaxChars: Number(data.get('injectMaxChars')),
+      injectDepth: Math.max(0, Math.min(8, Number(data.get('injectDepth')) || 0)),
+      injectGuide: data.has('injectGuide'),
+      injectGuideText: String(data.get('injectGuideText') || '').trim(),
+      aiClans: data.has('aiClans'),
+      focusInjection: data.has('focusInjection'),
+      focusNpcLimit: Math.max(3, Math.min(16, Number(data.get('focusNpcLimit')) || 8)),
+      focusFactionLimit: Math.max(2, Math.min(10, Number(data.get('focusFactionLimit')) || 4)),
+      dailyLife: data.has('dailyLife'),
+      dailyActors: Math.max(1, Math.min(6, Number(data.get('dailyActors')) || 2)),
+      festivals: data.has('festivals'),
+      customFestivals: String(data.get('customFestivals') || '').trim(),
+      compressionEnabled: data.has('compressionEnabled'),
+      compressEvery: Math.max(3, Math.min(100, Number(data.get('compressEvery')) || 12)),
+      compressTier2Every: Math.max(2, Math.min(20, Number(data.get('compressTier2Every')) || 5)),
+      compressTier3Every: Math.max(2, Math.min(20, Number(data.get('compressTier3Every')) || 5)),
+      compressKeepRounds: Math.max(0, Math.min(40, Number(data.get('compressKeepRounds')) || 4)),
       maxTokens: Number(data.get('maxTokens')),
       requestTimeout: Number(data.get('requestTimeout')),
     };
@@ -419,8 +460,91 @@ export class LivingWorldPanel {
     await this.callbacks.onSettingsChange?.(settings);
   }
 
+  mapCanvas() {
+    return this.root?.querySelector('[data-lw-map-canvas]') || null;
+  }
+
+  mapSvg() {
+    return this.mapCanvas()?.querySelector('svg') || null;
+  }
+
+  mapPoint(clientX, clientY) {
+    const svg = this.mapSvg();
+    if (!svg) return null;
+    if (svg.getScreenCTM && typeof DOMPoint === 'function') {
+      const matrix = svg.getScreenCTM();
+      if (matrix) {
+        const point = new DOMPoint(clientX, clientY).matrixTransform(matrix.inverse());
+        if (Number.isFinite(point.x) && Number.isFinite(point.y)) return { x: point.x, y: point.y };
+      }
+    }
+    const rect = svg.getBoundingClientRect?.();
+    if (!rect || !rect.width || !rect.height) return null;
+    return { x: (clientX - rect.left) / rect.width * 1000, y: (clientY - rect.top) / rect.height * 560 };
+  }
+
+  applyMapViewport() {
+    const group = this.root?.querySelector('[data-lw-map-viewport]');
+    if (!group) return;
+    const { scale, x, y } = this.mapView;
+    group.setAttribute('transform', `translate(${x.toFixed(2)} ${y.toFixed(2)}) scale(${scale.toFixed(4)})`);
+    const label = this.root?.querySelector('[data-lw-map-zoom-value]');
+    if (label) label.textContent = `${Math.round(scale * 100)}%`;
+  }
+
+  setMapScale(nextScale, anchor = null) {
+    const target = Math.min(MAP_MAX_SCALE, Math.max(MAP_MIN_SCALE, Number(nextScale) || 1));
+    const previous = this.mapView.scale || 1;
+    if (Math.abs(target - previous) < 0.0001) return;
+    const origin = anchor || { x: 500, y: 280 };
+    const ratio = target / previous;
+    this.mapView = {
+      scale: target,
+      x: origin.x - (origin.x - this.mapView.x) * ratio,
+      y: origin.y - (origin.y - this.mapView.y) * ratio,
+    };
+    this.applyMapViewport();
+  }
+
+  zoomMapBy(factor, clientX, clientY) {
+    const anchor = Number.isFinite(clientX) && Number.isFinite(clientY) ? this.mapPoint(clientX, clientY) : null;
+    this.setMapScale((this.mapView.scale || 1) * factor, anchor);
+  }
+
+  handleWheel(event) {
+    const canvas = event.target?.closest?.('[data-lw-map-canvas]');
+    if (!canvas) return;
+    event.preventDefault();
+    const step = event.deltaMode === 1 ? 0.05 : 0.0015;
+    this.zoomMapBy(Math.exp(-event.deltaY * step), event.clientX, event.clientY);
+  }
+
+  handleDoubleClick(event) {
+    const canvas = event.target?.closest?.('[data-lw-map-canvas]');
+    if (!canvas || event.target.closest('.lw-map-node')) return;
+    this.mapView = normalizeMapView({});
+    this.applyMapViewport();
+  }
+
   handlePointerDown(event) {
     if (event.button !== 0) return;
+    const canvas = event.target.closest?.('[data-lw-map-canvas]');
+    if (canvas && !event.target.closest('.lw-map-node') && !event.target.closest('button')) {
+      this.pointerGesture = {
+        id: event.pointerId,
+        type: 'pan',
+        startX: event.clientX,
+        startY: event.clientY,
+        originX: this.mapView.x,
+        originY: this.mapView.y,
+        startPoint: this.mapPoint(event.clientX, event.clientY),
+        moved: false,
+      };
+      canvas.classList.add('is-panning');
+      event.target.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+      return;
+    }
     const resize = event.target.closest('[data-lw-resize]');
     const floating = event.target.closest('.lw-floating');
     if (!resize && !floating) return;
@@ -443,6 +567,26 @@ export class LivingWorldPanel {
   handlePointerMove(event) {
     const gesture = this.pointerGesture;
     if (!gesture || gesture.id !== event.pointerId) return;
+    if (gesture.type === 'pan') {
+      const dx = event.clientX - gesture.startX;
+      const dy = event.clientY - gesture.startY;
+      if (Math.abs(dx) + Math.abs(dy) > 3) gesture.moved = true;
+      if (!gesture.moved) return;
+      const current = this.mapPoint(event.clientX, event.clientY);
+      if (gesture.startPoint && current) {
+        this.mapView = {
+          scale: this.mapView.scale,
+          x: gesture.originX + (current.x - gesture.startPoint.x),
+          y: gesture.originY + (current.y - gesture.startPoint.y),
+        };
+      } else {
+        const rect = this.mapSvg()?.getBoundingClientRect?.();
+        const unitsPerPixel = rect?.width ? 1000 / rect.width : 1;
+        this.mapView = { scale: this.mapView.scale, x: gesture.originX + dx * unitsPerPixel, y: gesture.originY + dy * unitsPerPixel };
+      }
+      this.applyMapViewport();
+      return;
+    }
     const dx = event.clientX - gesture.startX;
     const dy = event.clientY - gesture.startY;
     if (Math.abs(dx) + Math.abs(dy) > 4) gesture.moved = true;
@@ -475,6 +619,11 @@ export class LivingWorldPanel {
   async handlePointerUp(event) {
     const gesture = this.pointerGesture;
     if (!gesture || gesture.id !== event.pointerId) return;
+    if (gesture.type === 'pan') {
+      this.pointerGesture = null;
+      this.mapCanvas()?.classList.remove('is-panning');
+      return;
+    }
     this.pointerGesture = null;
     if (!gesture.moved) return;
     this.suppressFloatingClick = true;
@@ -510,6 +659,8 @@ export class LivingWorldPanel {
     this.root?.removeEventListener('pointermove', this.handlePointerMove);
     this.root?.removeEventListener('pointerup', this.handlePointerUp);
     this.root?.removeEventListener('pointercancel', this.handlePointerUp);
+    this.root?.removeEventListener('wheel', this.handleWheel);
+    this.root?.removeEventListener('dblclick', this.handleDoubleClick);
     this.root?.remove();
     this.root = null;
   }

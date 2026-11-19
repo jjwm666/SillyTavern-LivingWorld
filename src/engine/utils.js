@@ -31,14 +31,18 @@ export function average(values, fallback = 0) {
   return valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : fallback;
 }
 
-export function hashString(value) {
+export function hashNumber(value) {
   let hash = 2166136261;
   const input = String(value);
   for (let index = 0; index < input.length; index += 1) {
     hash ^= input.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
-  return (hash >>> 0).toString(36);
+  return hash >>> 0;
+}
+
+export function hashString(value) {
+  return hashNumber(value).toString(36);
 }
 
 export function makeId(prefix = 'id') {

@@ -1,7 +1,15 @@
-import { ACTION_LABELS, EVENT_STAGES, FACTION_ACTIONS, NPC_ACTIONS } from './constants.js';
+import {
+  ACTION_LABELS, DAILY_ACTIVITIES, DEFAULT_FESTIVALS, EVENT_STAGES, FACTION_ACTIONS,
+  NPC_ACTIONS, RELATION_DIMENSION_KEYS, RUMOR_SCOPES, RUMOR_SCOPE_IDS, RUMOR_TYPES, RUMOR_TYPE_SCOPE,
+} from './constants.js';
+import { maybeCompress } from './chronicle.js';
 import { heuristicProposal } from './director.js';
+import {
+  clanDemandOf, describeClan, mergeProposedClans, nextFactionTier, normalizeTier,
+  resolveClanDemand, settleClans, tierMeta, unhappiestClan,
+} from './factions.js';
 import { isSuccess, progressFromOutcome, rollCheck, SeededRandom } from './rng.js';
-import { addLog, addMemory, changeRelation, getFactionStatus } from './state.js';
+import { addLog, addMemory, changeRelation, refreshFactionDerived } from './state.js';
 import {
   asArray, average, byId, clamp, deepClone, hashString, integer,
   relationLabel, stageFor, text,
@@ -82,19 +90,28 @@ function advancePlan(npc, outcome, state) {
   }
 }
 
-function createRumor(state, { content, type = 'rumor', sourceRegionId, intensity = 2, truth = '' }) {
+function createRumor(state, { content, type = 'rumor', scope = '', sourceRegionId, intensity = 2, truth = '', reach = null }) {
   const regionId = byId(state.regions, sourceRegionId) ? sourceRegionId : state.player.regionId;
+  const safeType = RUMOR_TYPES.includes(type) ? type : 'rumor';
+  const safeScope = RUMOR_SCOPE_IDS.includes(scope) ? scope : (RUMOR_TYPE_SCOPE[safeType] || 'street');
+  const meta = RUMOR_SCOPES[safeScope];
   const rumor = {
     id: `rumor_${state.round}_${hashString(`${content}:${state.rumors.length}`)}`,
     content: text(content, 500, '一则没有来源的消息正在传播'),
-    type: ['announcement', 'report', 'rumor', 'sentiment'].includes(type) ? type : 'rumor',
+    type: safeType,
+    scope: safeScope,
+    reach: integer(reach, meta.maxLocations, 1, 12),
+    decayCarry: 0,
     truth: text(truth, 500),
     sourceRegionId: regionId,
     intensity: integer(intensity, 2, 1, 4),
     locations: [{ regionId, strength: integer(intensity, 2, 1, 4), arrivedRound: state.round }],
     createdRound: state.round,
     lastSpreadRound: state.round,
+    lastScopeChangeRound: 0,
     active: true,
+    pinned: false,
+    retention: 8,
   };
   state.rumors.push(rumor);
   state.rumors = state.rumors.slice(-100);
@@ -439,6 +456,19 @@ function applyNpcIntent(state, npc, intent, check) {
   });
 }
 
+function sanitizeRelationDelta(source) {
+  if (!source || typeof source !== 'object') return null;
+  const delta = {};
+  let touched = false;
+  for (const key of RELATION_DIMENSION_KEYS) {
+    const value = Number(source[key]);
+    if (!Number.isFinite(value) || value === 0) continue;
+    delta[key] = Math.round(clamp(value, -30, 30));
+    touched = true;
+  }
+  return touched ? delta : null;
+}
+
 function sanitizeFactionIntent(faction, intent, fallback) {
   const source = intent && typeof intent === 'object' ? intent : fallback;
   return {
@@ -447,7 +477,59 @@ function sanitizeFactionIntent(faction, intent, fallback) {
     targetFactionId: text(source?.targetFactionId, 100),
     regionId: text(source?.regionId, 100),
     summary: text(source?.summary, 400, faction.goal),
+    relationDelta: sanitizeRelationDelta(source?.relationDelta),
+    clanNote: text(source?.clanNote, 200),
   };
+}
+
+function factionPowerModifier(faction) {
+  const meta = tierMeta(normalizeTier(faction.tier, faction));
+  return Math.floor(faction.resources.influence / 25)
+    + Math.floor(integer(faction.authority, 50, 0, 100) / 40)
+    + Math.floor(meta.influenceBonus / 7);
+}
+
+function describeClanReaction(report) {
+  const parts = [];
+  if (report.satisfied.length) parts.push(`${report.satisfied.map((clan) => clan.name).join('、')}因主张被采纳而声势上涨`);
+  if (report.conflicted.length) parts.push(`${report.conflicted.map((clan) => clan.name).join('、')}指责首领偏离本派利益，当众表示不满`);
+  if (!parts.length) parts.push('各派系反应平平，仍在观望首领的下一步');
+  return parts.join('；');
+}
+
+function raiseInnerTensionHook(state, faction, clan) {
+  const hookId = `hook_clan_${faction.id}_${clan.id}`;
+  if (state.storyHooks.some((hook) => hook.id === hookId && ['active', 'approaching'].includes(hook.status))) return;
+  const region = byId(state.regions, faction.homeRegionId) || state.regions[0];
+  const demand = clanDemandOf(clan);
+  addStoryHook(state, {
+    id: hookId,
+    kind: 'complication',
+    regionId: region.id,
+    title: `${faction.name}：${clan.name}离心`,
+    content: `${faction.name}内部的${clan.name}（${demand.summary}）长期未获满足，正在私下串联，要求首领在下一轮给出交代。若继续被忽视，这一派可能带人出走、另寻靠山，或在关键时刻掣肘。`,
+    urgency: 2,
+    status: region.id === state.player.regionId ? 'active' : 'approaching',
+  });
+}
+
+/** 首领行动结算之后，处理内部派系的强弱、满意度与叙事反馈。 */
+function settleFactionAftermath(state, faction, action, outcome, home) {
+  const report = settleClans(faction, action, outcome);
+  if (report.satisfied.length) faction.resources.manpower = integer(faction.resources.manpower + 1, 0, 0, 100);
+  if (report.conflicted.length >= 2) faction.resources.influence = integer(faction.resources.influence - 2, 0, 0, 100);
+  refreshFactionDerived(faction);
+  addLog(state, {
+    type: 'faction',
+    regionId: home?.id,
+    title: `${faction.name}内部：${report.conflicted.length ? '派系反弹' : report.satisfied.length ? '派系归心' : '派系观望'}`,
+    detail: `${describeClanReaction(report)}。稳定度 ${faction.stability}，首领权威 ${faction.authority}，内部张力 ${faction.tension}。`,
+    public: false,
+  });
+  if (faction.tension >= 62) {
+    const clan = unhappiestClan(faction);
+    if (clan) raiseInnerTensionHook(state, faction, clan);
+  }
 }
 
 function applyFactionIntent(state, faction, intent, check) {
@@ -455,7 +537,7 @@ function applyFactionIntent(state, faction, intent, check) {
   const controlled = state.regions.filter((region) => region.controlFactionId === faction.id);
   const home = byId(state.regions, faction.homeRegionId) || controlled[0] || state.regions[0];
   let difficulty = 11;
-  let modifier = Math.floor(faction.resources.influence / 25) + Math.floor(faction.stability / 35);
+  let modifier = factionPowerModifier(faction);
   if (intent.action === 'expand') {
     const targetRegion = byId(state.regions, intent.regionId);
     const connected = controlled.some((region) => region.neighbors.some((edge) => edge.targetId === intent.regionId));
@@ -466,14 +548,16 @@ function applyFactionIntent(state, faction, intent, check) {
     modifier += Math.floor(faction.resources.manpower / 30);
     difficulty = 11 + Math.floor(targetRegion.danger / 3);
     const roll = check({ actorId: faction.id, action: 'expand', modifier, difficulty, reason: `${faction.name}试图控制${targetRegion.name}` });
-    if (isSuccess(roll.outcome)) {
+    const outcome = { success: isSuccess(roll.outcome), critical: roll.outcome === 'critical_success' };
+    if (outcome.success) {
       const former = byId(state.factions, targetRegion.controlFactionId);
       targetRegion.controlFactionId = faction.id;
       targetRegion.unrest = integer(targetRegion.unrest + 8, 0, 0, 100);
       faction.resources.influence = integer(faction.resources.influence + 4, 0, 0, 100);
       if (former) {
         former.resources.influence = integer(former.resources.influence - 5, 0, 0, 100);
-        changeRelation(state.factions, faction.id, former.id, -15, `争夺${targetRegion.name}控制权`);
+        former.authority = integer(former.authority - 3, 0, 0, 100);
+        changeRelation(state.factions, faction.id, former.id, -15, `争夺${targetRegion.name}控制权`, { hostility: 12, fear: 5, trust: -4 });
       }
       addLog(state, { type: 'faction', regionId: targetRegion.id, title: `${targetRegion.name}的控制权易主`, detail: `${faction.name}取得控制权${former ? `，原控制者${former.name}的影响力下降` : ''}。`, diceRollId: roll.id });
     } else {
@@ -481,45 +565,87 @@ function applyFactionIntent(state, faction, intent, check) {
       targetRegion.unrest = integer(targetRegion.unrest + 4, 0, 0, 100);
       addLog(state, { type: 'faction', regionId: targetRegion.id, title: `${faction.name}在${targetRegion.name}扩张受挫`, detail: '行动未能改变控制权，并造成一定人力损耗。', diceRollId: roll.id });
     }
+    settleFactionAftermath(state, faction, 'expand', outcome, home);
     return;
   }
 
   const roll = check({ actorId: faction.id, action: intent.action, modifier, difficulty, reason: intent.summary });
   const success = isSuccess(roll.outcome);
+  const critical = roll.outcome === 'critical_success';
+  const explicitDelta = intent.relationDelta || null;
   let title = `${faction.name}：${intent.summary}`;
   let detail = '';
   if (intent.action === 'trade' && target) {
     if (success) {
       faction.resources.wealth = integer(faction.resources.wealth + 5, 0, 0, 100);
       target.resources.wealth = integer(target.resources.wealth + 4, 0, 0, 100);
-      changeRelation(state.factions, faction.id, target.id, 6, '互利贸易');
+      changeRelation(state.factions, faction.id, target.id, 6, '互利贸易', explicitDelta || { interest: 12, trust: 4 });
       detail = `${faction.name}与${target.name}完成贸易，双方财富与关系改善。`;
     } else {
-      changeRelation(state.factions, faction.id, target.id, -2, '贸易分歧');
+      changeRelation(state.factions, faction.id, target.id, -2, '贸易分歧', explicitDelta || { trust: -4, hostility: 2 });
       detail = '贸易谈判没有达成协议，双方对条件存有分歧。';
     }
   } else if (intent.action === 'improve_relations' && target) {
-    changeRelation(state.factions, faction.id, target.id, success ? 10 : -3, success ? '主动外交与利益交换' : '外交接触失败');
-    detail = success ? `${faction.name}与${target.name}的关系转为${relationLabel(faction.relations[target.id].value)}。` : `${faction.name}的外交接触引起${target.name}疑虑。`;
+    if (success) {
+      changeRelation(state.factions, faction.id, target.id, 10, '主动外交与利益交换', explicitDelta || { trust: 7, hostility: -6, culture: 3 });
+    } else {
+      changeRelation(state.factions, faction.id, target.id, -3, '外交接触失败', explicitDelta || { trust: -5, hostility: 3 });
+    }
+    detail = success
+      ? `${faction.name}与${target.name}的关系转为${relationLabel(faction.relations[target.id]?.value ?? 0)}。`
+      : `${faction.name}的外交接触引起${target.name}疑虑。`;
   } else if (intent.action === 'pressure' && target) {
     if (success) {
-      target.stability = integer(target.stability - 6, 0, 0, 100);
+      target.authority = integer(target.authority - 4, 0, 0, 100);
+      refreshFactionDerived(target);
       faction.resources.influence = integer(faction.resources.influence + 2, 0, 0, 100);
     }
-    changeRelation(state.factions, faction.id, target.id, -9, `${faction.name}施加压力`);
-    detail = success ? `${target.name}在压力下稳定性下降。` : `${target.name}顶住压力，但双方关系继续恶化。`;
+    changeRelation(state.factions, faction.id, target.id, -9, `${faction.name}施加压力`, explicitDelta || { hostility: 11, fear: 9, trust: -6 });
+    detail = success ? `${target.name}在压力下稳定度与首领威望同时受损。` : `${target.name}顶住压力，但双方关系继续恶化。`;
   } else {
     if (success) {
-      faction.stability = integer(faction.stability + 6, 0, 0, 100);
       faction.resources.manpower = integer(faction.resources.manpower + 2, 0, 0, 100);
       home.unrest = integer(home.unrest - 3, 0, 0, 100);
-      detail = `${faction.name}恢复内部秩序并巩固了${home.name}的基本盘。`;
+      detail = `${faction.name}整肃内部，重新压住各派的争执，${home.name}的基本盘得到巩固。`;
     } else {
-      faction.stability = integer(faction.stability - 2, 0, 0, 100);
-      detail = `${faction.name}的内部整顿遇到阻力。`;
+      home.unrest = integer(home.unrest + 1, 0, 0, 100);
+      detail = `${faction.name}的内部整顿遇到阻力，各派互相推诿。`;
     }
   }
+  if (intent.clanNote) detail = `${detail}（${intent.clanNote}）`;
   addLog(state, { type: 'faction', regionId: home.id, title, detail, diceRollId: roll.id });
+  settleFactionAftermath(state, faction, intent.action, { success, critical }, home);
+}
+
+/** 势力分层：附庸抽成、庇护与层级跃迁。 */
+function settleFactionHierarchy(state) {
+  const map = new Map(state.factions.map((faction) => [faction.id, faction]));
+  for (const faction of state.factions) {
+    const overlord = map.get(faction.overlordId);
+    if (!overlord) {
+      faction.overlordId = '';
+      continue;
+    }
+    overlord.resources.influence = integer(overlord.resources.influence + 1, 0, 0, 100);
+    overlord.resources.wealth = integer(overlord.resources.wealth + 1, 0, 0, 100);
+    faction.authority = integer(faction.authority + 1, 0, 0, 100);
+    const relation = faction.relations[overlord.id];
+    if (relation?.dimensions && relation.dimensions.fear < 45) relation.dimensions.fear = integer(relation.dimensions.fear + 3, 45, 0, 100);
+  }
+  for (const faction of state.factions) {
+    const changed = nextFactionTier(faction);
+    if (!changed) continue;
+    const before = tierMeta(normalizeTier(faction.tier, faction));
+    const upgrade = changed.rank > before.rank;
+    faction.tier = changed.id;
+    faction.authority = clamp(integer(faction.authority, 50, 0, 100) + (upgrade ? 4 : -5), 0, 100);
+    addLog(state, {
+      type: 'faction',
+      regionId: faction.homeRegionId,
+      title: `${faction.name}${upgrade ? '升为' : '降为'}${changed.label}`,
+      detail: `资源规模的变化让${faction.name}在势力分层中移动了一级，周边势力的态度与要价都会随之调整。`,
+    });
+  }
 }
 
 function applyExistingEvent(state, event, check) {
@@ -599,13 +725,24 @@ function proposeEvents(state, proposals, check) {
 
 function spreadRumors(state, check, rng) {
   for (const rumor of state.rumors.filter((item) => item.active)) {
-    const roll = check({ actorId: rumor.id, action: 'rumor_spread', modifier: rumor.intensity - 2, difficulty: 12, reason: '风声沿地图传播判定' });
+    const scope = RUMOR_SCOPES[rumor.scope] || RUMOR_SCOPES.street;
+    const reach = clamp(integer(rumor.reach, scope.maxLocations, 1, 12), 1, 12);
+    const roll = check({
+      actorId: rumor.id,
+      action: 'rumor_spread',
+      modifier: rumor.intensity - 2 + scope.spread,
+      difficulty: 12,
+      reason: `${scope.label}沿地图传播判定`,
+    });
     let spread = false;
-    if (isSuccess(roll.outcome)) {
+    if (isSuccess(roll.outcome) && rumor.locations.length < reach) {
       const origins = [...rumor.locations];
       for (const origin of origins) {
+        if (rumor.locations.length >= reach) break;
         const region = byId(state.regions, origin.regionId);
-        const candidates = region?.weather.intensity >= 3 ? [] : (region?.neighbors || []).filter((edge) => !rumor.locations.some((location) => location.regionId === edge.targetId));
+        const candidates = region?.weather.intensity >= 3
+          ? []
+          : (region?.neighbors || []).filter((edge) => !rumor.locations.some((location) => location.regionId === edge.targetId));
         if (!candidates.length || origin.strength <= 0) continue;
         const edge = rng.pick(candidates);
         rumor.locations.push({ regionId: edge.targetId, strength: Math.max(1, origin.strength - 1), arrivedRound: state.round });
@@ -615,12 +752,25 @@ function spreadRumors(state, check, rng) {
     if (spread) {
       rumor.lastSpreadRound = state.round;
       const arrived = rumor.locations.filter((location) => location.arrivedRound === state.round).map((location) => byId(state.regions, location.regionId)?.name).filter(Boolean);
-      addLog(state, { type: 'rumor', title: '风声传到新的地区', detail: `“${rumor.content}”传至${arrived.join('、')}。`, diceRollId: roll.id });
+      addLog(state, { type: 'rumor', title: `${scope.label}传到新的地区`, detail: `“${rumor.content}”传至${arrived.join('、')}。`, diceRollId: roll.id });
     }
-    if (!rumor.pinned) {
-      for (const location of rumor.locations) {
-        if (state.round - location.arrivedRound > 0 && state.round % 2 === 0) location.strength = Math.max(0, location.strength - 1);
+    // 层级决定衰减速度：官方通告几乎不掉强度，密闻一次就凉
+    if (!rumor.pinned && state.round % 2 === 0) {
+      rumor.decayCarry = Math.min(4, (Number(rumor.decayCarry) || 0) + scope.decay);
+      const steps = Math.floor(rumor.decayCarry);
+      if (steps > 0) {
+        rumor.decayCarry -= steps;
+        for (const location of rumor.locations) {
+          if (state.round - location.arrivedRound > 0) location.strength = Math.max(0, location.strength - steps);
+        }
       }
+    }
+    // 知晓范围可变：小道消息传得够广，就会被转述成区域消息（甚至被官方接管口径）
+    if (rumor.scope === 'street' && rumor.locations.filter((location) => location.strength > 0).length >= 5 && rumor.intensity >= 3) {
+      rumor.scope = 'regional';
+      rumor.reach = Math.max(rumor.reach, RUMOR_SCOPES.regional.maxLocations);
+      rumor.lastScopeChangeRound = state.round;
+      addLog(state, { type: 'rumor', title: '小道消息传成了公论', detail: `“${rumor.content}”已经传遍数地，开始被当作区域内的既成说法。` });
     }
     for (const npc of state.npcs) {
       if (rumor.locations.some((location) => location.regionId === npc.locationId && location.strength > 0) && !npc.knownRumorIds.includes(rumor.id)) npc.knownRumorIds.push(rumor.id);
@@ -663,6 +813,151 @@ function settleBackground(state, proposal, check) {
   }
   state.background.simulatedPeople = totalPopulation;
   state.background.lastSettlement = text(proposal.backgroundSignal, 700) || `${activeRegions}/${state.regions.length} 个地区的背景生活总体稳定，其余地区出现不同程度压力。`;
+}
+
+/**
+ * 后台 API 依据角色卡与当前局势提出的派系：本地只做规则校验后并入。
+ * 关闭 aiClans 时完全忽略提案，保留插件自己按层级生成的派系。
+ */
+function applyClanProposals(state, proposals, options) {
+  if (options?.aiClans === false) return [];
+  const created = [];
+  for (const proposal of asArray(proposals).slice(0, 8)) {
+    const faction = byId(state.factions, proposal?.factionId);
+    if (!faction) continue;
+    const clans = asArray(proposal?.clans);
+    if (!clans.length) continue;
+    const result = mergeProposedClans(faction, clans, state.round);
+    if (result.added.length) {
+      refreshFactionDerived(faction);
+      const names = result.added.map((clan) => describeClan(clan)).join('、');
+      addLog(state, {
+        type: 'faction',
+        regionId: faction.homeRegionId,
+        title: `${faction.name}内部浮现新的派系`,
+        detail: `${names}${proposal.reason ? `。起因：${text(proposal.reason, 200)}` : ''}`,
+      });
+      for (const clan of result.added) created.push({ factionId: faction.id, clanId: clan.id, name: clan.name, demand: clan.demand });
+    }
+    if (result.updated.length) {
+      const changed = result.updated.filter((clan) => clan.createdRound === state.round).length;
+      if (changed) refreshFactionDerived(faction);
+    }
+  }
+  return created;
+}
+
+/** 自定义节日文本：一行一个「名称|月-日|描述」，也接受「名称|3月15日|描述」。 */
+export function parseCustomFestivals(raw) {
+  const list = [];
+  for (const line of String(raw || '').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const parts = trimmed.split('|').map((part) => part.trim());
+    const name = parts[0];
+    if (!name) continue;
+    const match = /^(\d{1,2})\s*[-\/月]\s*(\d{1,2})\s*日?$/.exec(parts[1] || '');
+    if (!match) continue;
+    list.push({
+      id: `fest_custom_${hashString(`${name}:${match[1]}:${match[2]}`)}`,
+      name: text(name, 60),
+      month: integer(Number(match[1]), 1, 1, 12),
+      day: integer(Number(match[2]), 1, 1, 30),
+      description: text(parts.slice(2).join('|'), 300),
+      origin: 'custom',
+      active: true,
+    });
+  }
+  return list;
+}
+
+/** 合并内置节日、世界书生成的节日与自定义节日（按名称去重，后者覆盖前者）。 */
+export function resolveFestivals(state, options = {}) {
+  const map = new Map();
+  const push = (festival) => {
+    if (!festival?.name) return;
+    map.set(text(festival.name, 60), {
+      id: text(festival.id, 100) || `fest_${hashString(festival.name)}`,
+      name: text(festival.name, 60),
+      month: integer(festival.month, 1, 1, 12),
+      day: integer(festival.day, 1, 1, 30),
+      description: text(festival.description, 300),
+      origin: ['local', 'worldbook', 'custom'].includes(festival.origin) ? festival.origin : 'local',
+      active: festival.active !== false,
+    });
+  };
+  for (const festival of DEFAULT_FESTIVALS) push(festival);
+  for (const festival of asArray(state.festivals)) push(festival);
+  for (const festival of parseCustomFestivals(options.customFestivals)) push(festival);
+  return [...map.values()].filter((festival) => festival.active);
+}
+
+/** 日期命中节日时结算：节庆会短暂改变物价、民生与人物情绪。 */
+function settleFestivals(state, options) {
+  if (options?.festivals === false) return [];
+  const triggered = [];
+  for (const festival of resolveFestivals(state, options)) {
+    if (festival.month !== state.calendar.month || festival.day !== state.calendar.day) continue;
+    for (const region of state.regions) {
+      region.prosperity = integer(region.prosperity + 2, region.prosperity, 0, 100);
+      region.unrest = integer(region.unrest - 3, region.unrest, 0, 100);
+      region.priceIndex = integer(region.priceIndex + 3, region.priceIndex, 30, 400);
+    }
+    for (const npc of state.npcs) {
+      if (!npc.core || !npc.alive) continue;
+      updateMood(npc, 1, 1);
+    }
+    addLog(state, {
+      type: 'festival',
+      title: `节令：${festival.name}`,
+      detail: `${festival.description || '按旧例举行'}。市面热闹，物价短暂上扬，乡里的怨气也暂时压下去一些。`,
+    });
+    triggered.push({ name: festival.name, origin: festival.origin });
+  }
+  return triggered;
+}
+
+function pickDailyActivity(npc, round) {
+  const role = `${npc.role || ''}${npc.name || ''}`;
+  const matched = DAILY_ACTIVITIES.filter((activity) => activity.keywords.some((keyword) => role.includes(keyword)));
+  const pool = matched.length ? matched : DAILY_ACTIVITIES;
+  return pool[hashString(`${npc.id}:${round}`).length % pool.length] || pool[0];
+}
+
+/**
+ * 日常生活：不掷骰、不改变大格局，只给人物的这一轮留下生活痕迹。
+ * 这是正文最需要的质感，也是"人物在过自己的日子"的证据。
+ */
+function settleDailyLife(state, rng, options) {
+  if (options?.dailyLife === false) return [];
+  const actors = clamp(integer(options?.dailyActors, 2, 0, 4), 0, 4);
+  if (!actors) return [];
+  const living = state.npcs.filter((npc) => npc.alive && npc.core);
+  if (!living.length) return [];
+  const local = living.filter((npc) => npc.locationId === state.player.regionId);
+  const pool = local.length >= actors ? local : [...local, ...living.filter((npc) => !local.includes(npc))];
+  const picked = [];
+  const candidates = [...pool];
+  while (picked.length < actors && candidates.length) {
+    const index = rng.int(0, candidates.length - 1);
+    picked.push(candidates.splice(index, 1)[0]);
+  }
+  const logs = [];
+  for (const npc of picked) {
+    const activity = pickDailyActivity(npc, state.round);
+    npc.routine = activity.text;
+    npc.schedule.current = activity.text;
+    if (activity.mood) updateMood(npc, activity.mood, 0);
+    addLog(state, {
+      type: 'daily',
+      regionId: npc.locationId,
+      actorId: npc.id,
+      title: `${npc.name}的一天`,
+      detail: `${activity.text}。`,
+    });
+    logs.push({ npcId: npc.id, text: activity.text });
+  }
+  return logs;
 }
 
 export function evolveWorld(previousState, proposal = {}, options = {}) {
@@ -710,6 +1005,9 @@ export function evolveWorld(previousState, proposal = {}, options = {}) {
     const backup = fallback.factionIntents.find((intent) => intent?.factionId === faction.id);
     applyFactionIntent(state, faction, sanitizeFactionIntent(faction, proposed, backup), check);
   }
+  settleFactionHierarchy(state);
+  // API 依据角色卡与当前局势提出的派系，在这里并入（本地只做规则校验）
+  const createdClans = applyClanProposals(state, safeProposal.factionClans, options);
   for (const event of state.events) applyExistingEvent(state, event, check);
   proposeEvents(state, safeProposal.eventProposals, check);
   const incidentRoll = check({ actorId: 'world', action: 'regional_incident', modifier: 0, difficulty: 19, reason: '本轮是否出现额外区域变故' });
@@ -724,23 +1022,37 @@ export function evolveWorld(previousState, proposal = {}, options = {}) {
   spreadRumors(state, check, rng);
   settleEconomy(state, safeProposal, check);
   settleBackground(state, safeProposal, check);
+  const festivals = settleFestivals(state, options);
+  const dailyLife = settleDailyLife(state, rng, options);
   for (const event of state.events) {
     if (!event.pinned && ['completed', 'failed'].includes(event.status) && state.round - event.resolvedRound >= event.retention) event.status = 'archived';
   }
   createTwists(state);
   syncStoryHooks(state);
-  for (const faction of state.factions) faction.status = getFactionStatus(faction);
+  for (const faction of state.factions) refreshFactionDerived(faction);
   for (const npc of state.npcs) npc.knownRumorIds = [...new Set(npc.knownRumorIds)].slice(-100);
   state.dice = state.dice.slice(-300);
+  // 成功推演计数：重 roll 会回退轮次但不会回退这个计数，分级压缩以它为准
+  state.evolutionCount = integer(state.evolutionCount, 0, 0) + 1;
+  const compressed = maybeCompress(state, options);
   const roundLogs = state.logs.filter((log) => log.round === state.round && log.public);
-  state.worldDigest = roundLogs.slice(0, 4).map((log) => log.title).join('；') || '各方继续处理自己的目标，世界局势暂未出现公开剧变。';
+  const substantive = roundLogs.filter((log) => log.type !== 'daily' && log.type !== 'festival');
+  state.worldDigest = (substantive.length ? substantive : roundLogs).slice(0, 4).map((log) => log.title).join('；') || '各方继续处理自己的目标，世界局势暂未出现公开剧变。';
   state.lastEvolution = {
     round: state.round,
+    evolutionCount: state.evolutionCount,
     coreNpcActions: coreNpcs.length,
     factionActions: state.factions.length,
     diceRolls: state.dice.filter((roll) => roll.round === state.round).length,
     backgroundPopulation: state.background.simulatedPeople,
     activeStoryHooks: state.storyHooks.filter((hook) => hook.status === 'active').length,
+    clanCount: state.factions.reduce((sum, faction) => sum + (faction.clans?.length || 0), 0),
+    maxFactionTension: state.factions.reduce((max, faction) => Math.max(max, faction.tension || 0), 0),
+    createdClans,
+    festivals,
+    dailyLife,
+    compressed: compressed.map((entry) => ({ tier: entry.tier, fromRound: entry.fromRound, toRound: entry.toRound })),
+    chronicleSize: state.chronicle.length,
     completedAt: new Date().toISOString(),
   };
   return state;

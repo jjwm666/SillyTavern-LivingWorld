@@ -1,4 +1,5 @@
-import { ACTION_LABELS, PROMPT_PRESETS } from '../engine/constants.js';
+import { ACTION_LABELS, CLAN_DEMANDS, FACTION_TIERS, PROMPT_PRESETS, RELATION_DIMENSIONS } from '../engine/constants.js';
+import { describeRelationTension } from '../engine/factions.js';
 import { byId, escapeHtml, formatNumber, outcomeLabel, relationLabel } from '../engine/utils.js';
 import { icon } from './icons.js';
 
@@ -37,6 +38,12 @@ export function renderOverview(world) {
   const lastDice = world.dice.filter((roll) => roll.round === world.round);
   const successCount = lastDice.filter((roll) => roll.outcome.includes('success')).length;
   const prosperity = Math.round(world.regions.reduce((sum, region) => sum + region.prosperity, 0) / world.regions.length);
+  const chronicle = Array.isArray(world.chronicle) ? world.chronicle : [];
+  const chronicleCount = (tier) => chronicle.filter((entry) => entry.tier === tier).length;
+  const compressedTo = chronicle.reduce((max, entry) => Math.max(max, Number(entry.toRound) || 0), 0);
+  const chronicleStrip = chronicle.length
+    ? `<div class="lw-chronicle-strip"><span><strong>${chronicleCount(3)}</strong>纪年</span><span><strong>${chronicleCount(2)}</strong>辑要</span><span><strong>${chronicleCount(1)}</strong>近纪</span><small>第 ${compressedTo} 轮之前的旧事已压缩成条目，原始日志仍保存在存档里</small></div>`
+    : '';
   const regionRows = [...world.regions].sort((a, b) => b.unrest - a.unrest).slice(0, 6).map((region) => {
     const faction = byId(world.factions, region.controlFactionId);
     return `<button class="lw-region-row" data-lw-action="region-select" data-id="${e(region.id)}">
@@ -69,6 +76,7 @@ export function renderOverview(world) {
       <button class="lw-stat" data-lw-action="tab" data-tab="events"><span class="lw-stat-icon">${icon('events')}</span><div><small>持续事件</small><strong>${activeEvents.length}</strong><span>${world.rumors.filter((rumor) => rumor.active).length} 则风声传播中</span></div></button>
       <button class="lw-stat" data-lw-action="tab" data-tab="dice"><span class="lw-stat-icon">${icon('dice')}</span><div><small>本轮判定</small><strong>${lastDice.length}</strong><span>${lastDice.length ? Math.round(successCount / lastDice.length * 100) : 0}% 判定成功</span></div></button>
     </section>
+    ${chronicleStrip}
     <div class="lw-dashboard-grid">
       <section class="lw-panel-span-2">${sectionHeading('LIVE CHRONICLE', '世界正在发生什么', `<button class="lw-text-button" data-lw-action="evolve">${icon('play', 14)}推进一轮</button>`)}<div class="lw-timeline">${timeline}</div></section>
       <section>${sectionHeading('PRESSURE MAP', '地区压力', `<button class="lw-icon-button" data-lw-action="tab" data-tab="map" title="打开地图">${icon('map')}</button>`)}<div class="lw-region-list">${regionRows}</div></section>
@@ -101,35 +109,152 @@ export function renderPlayer(world) {
   </section>`;
 }
 
-export function renderPeople(world, search = '') {
-  const query = search.trim().toLowerCase();
-  const npcs = world.npcs.filter((npc) => !query || `${npc.name}${npc.role}${npc.goals.map((goal) => goal.description).join('')}`.toLowerCase().includes(query));
-  const cards = npcs.map((npc) => {
-    const region = byId(world.regions, npc.locationId);
-    const faction = byId(world.factions, npc.factionId);
-    const plan = npc.plan;
-    return `<button class="lw-person-card" data-lw-action="npc-select" data-id="${e(npc.id)}">
+function relationTone(value) {
+  if (value >= 25) return 'warm';
+  if (value <= -25) return 'hostile';
+  return 'neutral';
+}
+
+function personCard(npc, world) {
+  const region = byId(world.regions, npc.locationId);
+  const faction = byId(world.factions, npc.factionId);
+  const plan = npc.plan;
+  return `<button class="lw-person-card" data-lw-action="npc-select" data-id="${e(npc.id)}">
       <span class="lw-person-top"><span class="lw-avatar" style="--faction-color:${e(faction?.color || '#6d8dff')}">${e(npc.name.slice(0, 1))}</span><span class="lw-person-title"><strong>${e(npc.name)}</strong><small>${e(npc.role)}</small></span>${pill(npc.core ? '核心' : '背景', npc.core ? 'teal' : '')}</span>
       <span class="lw-person-goal"><small>长期目标</small><strong>${e(npc.goals[0]?.description || '尚未形成目标')}</strong></span>
       <span class="lw-person-location">${icon('map', 13)}${e(region?.name || '未知')}<i></i>${e(faction?.name || '无所属')}</span>
       <span class="lw-person-state"><span><small>情绪</small>${e(npc.mood.label)}</span><span><small>当前计划</small>${e(plan?.stage || '酝酿中')}</span><span>${icon('chevron', 16)}</span></span>
     </button>`;
+}
+
+/** 人物关系图：节点是人，边是他们之间的信任/敌意。可随时切回文字卡片。 */
+export function renderPeopleGraph(world, focusNpcId = null, search = '') {
+  const query = String(search || '').trim().toLowerCase();
+  const npcs = world.npcs
+    .filter((npc) => npc.alive && npc.core)
+    .filter((npc) => !query || `${npc.name}${npc.role}`.toLowerCase().includes(query))
+    .slice(0, 26);
+  if (!npcs.length) return '<div class="lw-no-data">没有符合条件的人物。</div>';
+  const index = new Map(npcs.map((npc, i) => [npc.id, i]));
+  const count = npcs.length;
+  const cx = 500;
+  const cy = 305;
+  const rx = count > 1 ? 350 : 0;
+  const ry = count > 1 ? 235 : 0;
+  const nodes = npcs.map((npc, i) => {
+    const angle = -Math.PI / 2 + (i * Math.PI * 2) / Math.max(1, count);
+    const faction = byId(world.factions, npc.factionId);
+    return {
+      npc,
+      faction,
+      x: cx + Math.cos(angle) * rx,
+      y: cy + Math.sin(angle) * ry,
+    };
+  });
+  const pairs = new Map();
+  for (const npc of npcs) {
+    for (const [otherId, relation] of Object.entries(npc.relationships || {})) {
+      const a = index.get(npc.id);
+      const b = index.get(otherId);
+      if (a === undefined || b === undefined || a === b) continue;
+      const key = a < b ? `${a}:${b}` : `${b}:${a}`;
+      const entry = pairs.get(key) || { a: Math.min(a, b), b: Math.max(a, b), trust: 0, fear: 0, hits: 0 };
+      entry.trust += Number(relation?.trust) || 0;
+      entry.fear += Number(relation?.fear) || 0;
+      entry.hits += 1;
+      pairs.set(key, entry);
+    }
+  }
+  const edges = [...pairs.values()].map((pair) => {
+    const from = nodes[pair.a];
+    const to = nodes[pair.b];
+    const trust = Math.round(pair.trust / Math.max(1, pair.hits));
+    const tone = relationTone(trust);
+    const touched = focusNpcId && (from.npc.id === focusNpcId || to.npc.id === focusNpcId);
+    return `<line class="lw-person-edge ${tone}${touched ? ' is-focus' : ''}" x1="${from.x.toFixed(1)}" y1="${from.y.toFixed(1)}" x2="${to.x.toFixed(1)}" y2="${to.y.toFixed(1)}" stroke-width="${(0.8 + Math.abs(trust) / 22).toFixed(2)}"><title>${e(from.npc.name)} ⇄ ${e(to.npc.name)}｜信任 ${trust}</title></line>`;
   }).join('');
+  const nodeMarkup = nodes.map(({ npc, faction, x, y }) => {
+    const focused = npc.id === focusNpcId;
+    return `<g class="lw-person-node${focused ? ' is-focus' : ''}" data-lw-action="npc-focus" data-id="${e(npc.id)}" role="button" tabindex="0">
+      <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${focused ? 27 : 22}" fill="${e(faction?.color || '#6d8dff')}" fill-opacity="${focused ? 0.95 : 0.55}" stroke="${e(faction?.color || '#6d8dff')}" stroke-width="${focused ? 2.6 : 1.4}"></circle>
+      <text x="${x.toFixed(1)}" y="${(y + 4).toFixed(1)}" text-anchor="middle" class="lw-person-node-initial">${e(npc.name.slice(0, 1))}</text>
+      <text x="${x.toFixed(1)}" y="${(y + (focused ? 44 : 39)).toFixed(1)}" text-anchor="middle" class="lw-person-node-name">${e(npc.name)}</text>
+      <text x="${x.toFixed(1)}" y="${(y + (focused ? 58 : 53)).toFixed(1)}" text-anchor="middle" class="lw-person-node-role">${e(npc.role)}</text>
+    </g>`;
+  }).join('');
+  const focused = focusNpcId ? npcs.find((npc) => npc.id === focusNpcId) : null;
+  const relations = focused
+    ? Object.entries(focused.relationships || {})
+      .map(([otherId, relation]) => {
+        const other = byId(world.npcs, otherId);
+        if (!other) return null;
+        const trust = Math.round(Number(relation?.trust) || 0);
+        return `<article class="lw-relation-row ${relationTone(trust)}">
+          <span class="lw-relation-who"><strong>${e(other.name)}</strong><small>${e(other.role)}</small></span>
+          <span class="lw-relation-meters"><span>信任 ${trust}</span><span>好感 ${Math.round(Number(relation?.affection) || 0)}</span><span>畏惧 ${Math.round(Number(relation?.fear) || 0)}</span><span>人情 ${Math.round(Number(relation?.debt) || 0)}</span></span>
+        </article>`;
+      })
+      .filter(Boolean)
+      .join('')
+    : '';
+  return `<div class="lw-people-graph-layout">
+    <div class="lw-people-graph-canvas">
+      <svg viewBox="0 0 1000 610" role="img" aria-label="人物关系图">
+        <defs><pattern id="lw-person-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="currentColor" stroke-width="0.6"></path></pattern></defs>
+        <rect x="0" y="0" width="1000" height="610" fill="url(#lw-person-grid)" opacity="0.5"></rect>
+        ${edges}
+        ${nodeMarkup}
+      </svg>
+      <div class="lw-graph-legend"><span class="warm">信任</span><span class="neutral">往来</span><span class="hostile">敌意</span><span>${edges ? '点击人物查看关系细节' : '还没有积累起关系，推演几轮后这张图会连起来'}</span></div>
+    </div>
+    <aside class="lw-people-graph-side">
+      ${focused
+        ? `<div class="lw-graph-focus"><span class="lw-kicker">SELECTED</span><h3>${e(focused.name)}</h3><p>${e(focused.role)} · ${e(byId(world.regions, focused.locationId)?.name || '未知地区')}</p>${focused.routine ? `<small>日常：${e(focused.routine)}</small>` : ''}</div>
+           <h4>关系细节</h4>
+           <div class="lw-relation-list">${relations || '<div class="lw-no-data">他还没有建立起值得记录的关系。</div>'}</div>`
+        : '<div class="lw-no-data">点一个人物，查看他与别人的信任、畏惧与人情。</div>'}
+    </aside>
+  </div>`;
+}
+
+export function renderPeople(world, search = '', mode = 'list', focusNpcId = null) {
+  const query = search.trim().toLowerCase();
+  const npcs = world.npcs.filter((npc) => !query || `${npc.name}${npc.role}${npc.goals.map((goal) => goal.description).join('')}`.toLowerCase().includes(query));
+  const isGraph = mode === 'graph';
+  const cards = npcs.map((npc) => personCard(npc, world)).join('');
+  const body = isGraph
+    ? renderPeopleGraph(world, focusNpcId, search)
+    : `<div class="lw-people-grid">${cards || '<div class="lw-no-data">没有符合条件的人物。</div>'}</div>`;
   return `<section class="lw-view-enter">${sectionHeading('AUTONOMOUS AGENTS', '人物不是等待玩家的道具', `<span class="lw-count-label">${npcs.length} / ${world.npcs.length} 人</span>`)}
-    <div class="lw-toolbar"><label class="lw-search">${icon('search', 16)}<input data-lw-input="people-search" value="${e(search)}" placeholder="搜索名字、身份或目标" aria-label="搜索人物"></label><span class="lw-toolbar-note">每个人只依据自己的记忆与听闻行动</span></div>
-    <div class="lw-people-grid">${cards || '<div class="lw-no-data">没有符合条件的人物。</div>'}</div>
+    <div class="lw-toolbar">
+      <label class="lw-search">${icon('search', 16)}<input data-lw-input="people-search" value="${e(search)}" placeholder="搜索名字、身份或目标" aria-label="搜索人物"></label>
+      <div class="lw-mode-switch" role="group" aria-label="人物视图切换">
+        <button class="${isGraph ? '' : 'is-active'}" data-lw-action="people-mode" data-mode="list">${icon('users', 14)}卡片</button>
+        <button class="${isGraph ? 'is-active' : ''}" data-lw-action="people-mode" data-mode="graph">${icon('route', 14)}关系图</button>
+      </div>
+      <span class="lw-toolbar-note">每个人只依据自己的记忆与听闻行动</span>
+    </div>
+    ${body}
   </section>`;
 }
 
-export function renderMap(world, selectedRegionId, zoom = 1, scope = {}) {
+export const MAP_MIN_SCALE = 0.4;
+export const MAP_MAX_SCALE = 4;
+
+export function normalizeMapView(view) {
+  const source = view && typeof view === 'object' ? view : {};
+  const scale = Math.min(MAP_MAX_SCALE, Math.max(MAP_MIN_SCALE, Number(source.scale) || 1));
+  const x = Number.isFinite(Number(source.x)) ? Number(source.x) : 0;
+  const y = Number.isFinite(Number(source.y)) ? Number(source.y) : 0;
+  return { scale, x, y };
+}
+
+export function renderMap(world, selectedRegionId, view = {}, scope = {}) {
   const regions = scope.regions || world.regions;
   const path = scope.path || [];
   const parent = path.at(-1) || null;
   const selected = byId(regions, selectedRegionId);
-  const safeZoom = Math.max(0.8, Math.min(2, Number(zoom) || 1));
-  const width = 1000 / safeZoom;
-  const height = 560 / safeZoom;
-  const viewBox = `${500 - width / 2} ${280 - height / 2} ${width} ${height}`;
+  const mapView = normalizeMapView(view);
   const lines = [];
   const seen = new Set();
   for (const region of regions) {
@@ -158,8 +283,18 @@ export function renderMap(world, selectedRegionId, zoom = 1, scope = {}) {
     </g>`;
   }).join('');
   const breadcrumbs = `<nav class="lw-map-breadcrumbs" aria-label="地图层级"><button data-lw-action="map-root">世界</button>${path.map((region, index) => `<span>/</span><button data-lw-action="map-path" data-depth="${index}" class="${index === path.length - 1 ? 'current' : ''}">${e(region.name)}</button>`).join('')}</nav>`;
-  return `<section class="lw-map-view lw-view-enter">${sectionHeading('GEOGRAPHY IS DESTINY', parent ? `${parent.name} · 次级地图` : '世界地图', `<div class="lw-map-actions"><button class="lw-icon-button" data-lw-action="map-zoom-out" title="缩小">${icon('zoomOut')}</button><button class="lw-icon-button" data-lw-action="map-zoom-in" title="放大">${icon('zoomIn')}</button></div>`)}
-    ${breadcrumbs}<div class="lw-map-layout"><div class="lw-map-canvas"><svg viewBox="${viewBox}" role="img" aria-label="可点击的多级区域与路线图"><defs><pattern id="lw-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="currentColor" stroke-width=".5"/></pattern></defs><rect class="lw-map-grid" x="-500" y="-500" width="2000" height="1600" fill="url(#lw-grid)"/>${lines.join('')}${nodes || '<text x="500" y="280" text-anchor="middle" class="lw-map-node-label">当前层级暂无区域</text>'}</svg><div class="lw-map-legend"><span><i class="route"></i>同层可行路线</span><span><i class="node"></i>控制势力</span><span>选中含 +N 的区域后可进入下一级</span></div></div>
+  const zoomLabel = `${Math.round(mapView.scale * 100)}%`;
+  const controls = `<div class="lw-map-actions"><button class="lw-icon-button" data-lw-action="map-zoom-out" title="缩小（滚轮向下）">${icon('zoomOut')}</button><span class="lw-map-zoom-value" data-lw-map-zoom-value>${zoomLabel}</span><button class="lw-icon-button" data-lw-action="map-zoom-in" title="放大（滚轮向上）">${icon('zoomIn')}</button><button class="lw-icon-button" data-lw-action="map-zoom-reset" title="重置视图">${icon('refresh')}</button></div>`;
+  return `<section class="lw-map-view lw-view-enter">${sectionHeading('GEOGRAPHY IS DESTINY', parent ? `${parent.name} · 次级地图` : '世界地图', controls)}
+    ${breadcrumbs}<div class="lw-map-layout"><div class="lw-map-canvas" data-lw-map-canvas tabindex="0" role="application" aria-label="可缩放、可拖动的区域地图">
+      <svg viewBox="0 0 1000 560" role="img" aria-label="可点击的多级区域与路线图"><defs><pattern id="lw-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="currentColor" stroke-width=".5"/></pattern></defs>
+        <g class="lw-map-viewport" data-lw-map-viewport transform="translate(${mapView.x} ${mapView.y}) scale(${mapView.scale})">
+          <rect class="lw-map-grid" x="-1200" y="-1200" width="3400" height="3000" fill="url(#lw-grid)"/>${lines.join('')}${nodes || '<text x="500" y="280" text-anchor="middle" class="lw-map-node-label">当前层级暂无区域</text>'}
+        </g>
+      </svg>
+      <div class="lw-map-hint" data-lw-map-hint>滚轮缩放 · 按住空白处拖动平移 · 双击重置</div>
+      <div class="lw-map-legend"><span><i class="route"></i>同层可行路线</span><span><i class="node"></i>控制势力</span><span>选中含 +N 的区域后可进入下一级</span></div>
+    </div>
     <aside class="lw-map-side">${selected ? renderRegionDetail(world, selected, regions) : '<div class="lw-side-placeholder">' + icon('map', 28) + `<p>当前为${parent ? `第 ${path.length + 1} 级区域` : '大区域'}。选择节点查看天气、路线与次级区域。</p>`}</aside></div>
   </section>`;
 }
@@ -178,11 +313,16 @@ function renderRegionDetail(world, region, regions = world.regions) {
 
 export function renderFactions(world, selectedFactionId) {
   const selected = byId(world.factions, selectedFactionId) || world.factions[0];
-  const count = world.factions.length;
-  const positions = new Map(world.factions.map((faction, index) => {
-    const angle = -Math.PI / 2 + index * Math.PI * 2 / count;
-    return [faction.id, { x: 450 + Math.cos(angle) * 235, y: 275 + Math.sin(angle) * 190 }];
-  }));
+  const columns = [140, 380, 620, 860];
+  const positions = new Map();
+  const groups = FACTION_TIERS.map((tier, index) => {
+    const members = world.factions.filter((faction) => faction.tier === tier.id);
+    const count = Math.max(members.length, 1);
+    members.forEach((faction, memberIndex) => {
+      positions.set(faction.id, { x: columns[index] || 860, y: 190 + (memberIndex + 0.5) * (320 / count) });
+    });
+    return { tier, members, x: columns[index] || 860, count: members.length };
+  });
   const edges = [];
   const seen = new Set();
   for (const faction of world.factions) {
@@ -192,22 +332,49 @@ export function renderFactions(world, selectedFactionId) {
       seen.add(key);
       const sourcePosition = positions.get(faction.id);
       const targetPosition = positions.get(targetId);
+      const dimensions = relation.dimensions || {};
+      const hostile = (dimensions.hostility ?? 0) > (dimensions.trust ?? 0);
       const tone = relation.value >= 15 ? 'positive' : relation.value <= -15 ? 'negative' : 'neutral';
-      edges.push(`<line class="lw-relation-edge ${tone}" x1="${sourcePosition.x}" y1="${sourcePosition.y}" x2="${targetPosition.x}" y2="${targetPosition.y}" stroke-width="${1 + Math.abs(relation.value) / 35}"><title>${e(faction.name)} ↔ ${e(byId(world.factions, targetId)?.name)}：${e(relation.label)} (${relation.value})</title></line>`);
+      edges.push(`<line class="lw-relation-edge ${tone} ${hostile ? 'entangled' : ''}" x1="${sourcePosition.x}" y1="${sourcePosition.y}" x2="${targetPosition.x}" y2="${targetPosition.y}" stroke-width="${0.8 + Math.abs(relation.value) / 30 + (relation.tension || 0) / 60}"><title>${e(faction.name)} ↔ ${e(byId(world.factions, targetId)?.name)}：${e(relation.label)} (${relation.value})${relation.tension >= 40 ? ` · 矛盾张力 ${Math.round(relation.tension)}` : ''}</title></line>`);
     }
   }
+  const tierLabels = groups.map((group) => `<text class="lw-tier-label" x="${group.x}" y="132" text-anchor="middle">${e(group.tier.label)}${group.count ? ` · ${group.count}` : ''}</text>`).join('');
   const nodes = world.factions.map((faction) => {
     const position = positions.get(faction.id);
-    return `<g class="lw-faction-node ${selected?.id === faction.id ? 'active' : ''}" data-lw-action="faction-select" data-id="${e(faction.id)}" role="button" tabindex="0"><circle cx="${position.x}" cy="${position.y}" r="35" style="--faction-color:${e(faction.color)}"/><text x="${position.x}" y="${position.y + 4}" text-anchor="middle">${e(faction.name.slice(0, 2))}</text><text class="label" x="${position.x}" y="${position.y + 53}" text-anchor="middle">${e(faction.name)}</text></g>`;
+    const clanCount = faction.clans?.length || 0;
+    return `<g class="lw-faction-node ${selected?.id === faction.id ? 'active' : ''}" data-lw-action="faction-select" data-id="${e(faction.id)}" role="button" tabindex="0" aria-label="${e(faction.name)}，${e(faction.status)}"><circle cx="${position.x}" cy="${position.y}" r="35" style="--faction-color:${e(faction.color)}"/><text x="${position.x}" y="${position.y + 4}" text-anchor="middle">${e(faction.name.slice(0, 2))}</text><text class="label" x="${position.x}" y="${position.y + 53}" text-anchor="middle">${e(faction.name)}</text>${clanCount ? `<text class="lw-faction-clan-badge" x="${position.x}" y="${position.y - 45}" text-anchor="middle">${clanCount} 派系</text>` : ''}</g>`;
   }).join('');
-  const relations = selected ? Object.entries(selected.relations).map(([id, relation]) => {
+  const relationRows = selected ? Object.entries(selected.relations).map(([id, relation]) => {
     const other = byId(world.factions, id);
-    return `<button class="lw-faction-relation" data-lw-action="faction-select" data-id="${e(id)}"><span><strong>${e(other?.name || id)}</strong><small>${e(relation.lastChange || '近期关系无明显变化')}</small></span><span>${pill(relation.label, relation.value < -14 ? 'danger' : relation.value > 14 ? 'teal' : '')}<b>${relation.value > 0 ? '+' : ''}${relation.value}</b></span></button>`;
+    const dimensions = relation.dimensions || {};
+    const bars = RELATION_DIMENSIONS.map((dimension) => {
+      const score = Math.round(Number(dimensions[dimension.key]) || 0);
+      return `<span class="lw-relation-dimension" title="${e(dimension.label)}：${e(dimension.description)}"><small>${e(dimension.label)}</small><i class="tone-${e(dimension.tone)}" style="--score:${score}"></i><b>${score}</b></span>`;
+    }).join('');
+    return `<article class="lw-faction-relation"><header><strong>${e(other?.name || id)}</strong>${pill(relation.label, relation.value < -14 ? 'danger' : relation.value > 14 ? 'teal' : '')}<b>${relation.value > 0 ? '+' : ''}${relation.value}</b></header><div class="lw-relation-dimensions">${bars}</div>${relation.tension >= 30 ? `<p class="lw-relation-tension">矛盾张力 ${Math.round(relation.tension)} · ${e(describeRelationTension(dimensions) || '关系内部存在未解的张力')}</p>` : ''}<small>${e(relation.lastChange || '近期关系无明显变化')}</small></article>`;
   }).join('') : '';
-  return `<section class="lw-view-enter">${sectionHeading('NO FACTION STANDS ALONE', '势力关系网', '<span class="lw-toolbar-note">线条颜色表示关系，粗细表示强度</span>')}
-    <div class="lw-faction-layout"><div class="lw-faction-canvas"><svg viewBox="0 0 900 550" role="img" aria-label="势力两两关系图">${edges.join('')}${nodes}</svg><div class="lw-graph-legend"><span class="positive">合作</span><span class="neutral">中立</span><span class="negative">冲突</span></div></div>
-    <aside class="lw-faction-detail">${selected ? `<span class="lw-kicker">FACTION DOSSIER</span><div class="lw-faction-title"><span style="background:${e(selected.color)}"></span><div><h3>${e(selected.name)}</h3><p>${e(selected.description)}</p></div></div><div class="lw-faction-resources"><span><small>稳定</small><b>${selected.stability}</b>${meter(selected.stability)}</span><span><small>财富</small><b>${selected.resources.wealth}</b>${meter(selected.resources.wealth, 'amber')}</span><span><small>影响</small><b>${selected.resources.influence}</b>${meter(selected.resources.influence)}</span><span><small>人力</small><b>${selected.resources.manpower}</b>${meter(selected.resources.manpower)}</span></div><div class="lw-faction-goal"><small>长期目标</small><strong>${e(selected.goal)}</strong></div><h4>两两关系</h4><div class="lw-faction-relations">${relations}</div>` : ''}</aside></div>
+  const clanRows = selected ? (selected.clans || []).slice().sort((a, b) => b.strength - a.strength).map((clan) => {
+    const demand = CLAN_DEMANDS[clan.demand];
+    return `<article class="lw-clan-row"><header><strong>${e(clan.name)}</strong><span class="lw-clan-demand">${e(demand?.label || clan.demand)}</span></header><div class="lw-clan-meters"><span><small>势力</small>${meter(clan.strength, 'amber')}<b>${clan.strength}</b></span><span><small>满意度</small>${meter(clan.satisfaction, clan.satisfaction < 40 ? 'danger' : '')}<b>${clan.satisfaction}</b></span></div><small class="lw-clan-note">${e(clan.note || demand?.description || '暂无异动')}</small></article>`;
+  }).join('') : '';
+  const overlord = byId(world.factions, selected?.overlordId);
+  const vassals = selected ? world.factions.filter((faction) => faction.overlordId === selected.id) : [];
+  const detail = selected ? `<span class="lw-kicker">FACTION DOSSIER</span><div class="lw-faction-title"><span style="background:${e(selected.color)}"></span><div><h3>${e(selected.name)}</h3><p>${e(selected.description)}</p></div></div>
+    <div class="lw-faction-tier"><span>${e(tierLabelOf(selected))}</span><span>${overlord ? `附属于 ${e(overlord.name)}` : vassals.length ? `统辖 ${vassals.length} 个势力` : '独立势力'}</span></div>
+    <div class="lw-faction-resources"><span><small>稳定</small><b>${selected.stability}</b>${meter(selected.stability)}</span><span><small>权威</small><b>${selected.authority}</b>${meter(selected.authority)}</span><span><small>团结</small><b>${selected.cohesion}</b>${meter(selected.cohesion)}</span><span><small>暗涌</small><b>${selected.tension}</b>${meter(selected.tension, 'danger')}</span><span><small>财富</small><b>${selected.resources.wealth}</b>${meter(selected.resources.wealth, 'amber')}</span><span><small>影响</small><b>${selected.resources.influence}</b>${meter(selected.resources.influence)}</span><span><small>人力</small><b>${selected.resources.manpower}</b>${meter(selected.resources.manpower)}</span></div>
+    <div class="lw-faction-goal"><small>长期目标</small><strong>${e(selected.goal)}</strong></div>
+    <h4>内部派系</h4><div class="lw-clan-list">${clanRows || '<p class="lw-no-data">该势力尚未形成明显的内部派系。</p>'}</div>
+    <h4>对外关系</h4><div class="lw-faction-relations">${relationRows || '<p class="lw-no-data">暂无对外关系记录。</p>'}</div>` : '';
+
+  return `<section class="lw-view-enter">${sectionHeading('NO FACTION STANDS ALONE', '势力格局与内部派系', '<span class="lw-toolbar-note">纵轴为层级，线条表示关系，虚线表示利益与世仇纠缠</span>')}
+    <div class="lw-faction-layout"><div class="lw-faction-canvas"><svg viewBox="0 0 1000 620" role="img" aria-label="按层级排列的势力关系图">${tierLabels}${edges.join('')}${nodes}</svg><div class="lw-graph-legend"><span class="positive">合作</span><span class="neutral">中立</span><span class="negative">冲突</span><span class="entangled">利益与仇恨纠缠</span></div></div>
+    <aside class="lw-faction-detail">${detail}</aside></div>
   </section>`;
+}
+
+function tierLabelOf(faction) {
+  const tier = FACTION_TIERS.find((item) => item.id === faction.tier);
+  return tier ? `${tier.label} · 第 ${tier.rank} 级` : '地方势力';
 }
 
 export function renderEvents(world) {
@@ -255,7 +422,10 @@ export function renderSettings(settings, status, world) {
       <section class="lw-settings-section"><h3>外观与悬浮入口</h3><div class="lw-field-grid"><label>面板主题<select name="theme"><option value="dark" ${settings.theme !== 'light' ? 'selected' : ''}>墨青深色</option><option value="light" ${settings.theme === 'light' ? 'selected' : ''}>纸墨浅色</option></select></label><label>悬浮按钮大小<input type="number" name="floatingSize" min="42" max="88" value="${settings.floatingSize}"><small>也可拖动悬浮球右下角调整</small></label></div><label class="lw-toggle-row"><span><strong>显示悬浮按钮</strong><small>关闭后仍可通过酒馆右上角菜单中的“万象世界引擎”打开</small></span><input type="checkbox" name="floatingButton" ${settings.floatingButton ? 'checked' : ''}><i></i></label></section>
       <section class="lw-settings-section lw-prompt-section"><h3>提示词与自定义预设</h3><div class="lw-preset-row"><label>世界预设<select name="promptPreset">${presetOptions.map((preset) => `<option value="${e(preset.id)}" ${settings.promptPreset === preset.id ? 'selected' : ''}>${e(preset.name)}</option>`).join('')}</select></label><button type="button" class="lw-button" data-lw-action="apply-prompt-preset">载入预设</button><button type="button" class="lw-button" data-lw-action="delete-prompt-preset">删除自定义预设</button></div><div class="lw-preset-save"><input name="newPromptPresetName" maxlength="60" placeholder="新预设名称"><button type="button" class="lw-button" data-lw-action="save-prompt-preset">${icon('plus')}将当前内容另存为预设</button></div><div class="lw-prompt-grid"><label>初始化提示词<textarea name="bootstrapPrompt" rows="4" maxlength="6000" placeholder="控制地图、人物、势力和题材如何生成">${e(settings.bootstrapPrompt)}</textarea></label><label>每轮推演提示词<textarea name="evolutionPrompt" rows="4" maxlength="6000" placeholder="控制 NPC 行动偏好、事件密度和世界演化方向">${e(settings.evolutionPrompt)}</textarea></label><label class="lw-prompt-wide">自定义破限词<textarea name="jailbreakPrompt" rows="3" maxlength="6000" placeholder="填写需要同时附加到初始化与推演请求的自定义创作指令">${e(settings.jailbreakPrompt)}</textarea></label></div><p class="lw-field-help">自定义预设保存初始化、推演和破限词三项内容，只发送给后台世界模型，不修改酒馆全局预设或聊天记录。</p></section>
       <section class="lw-settings-section"><h3>后台 API</h3><div class="lw-segmented"><label><input type="radio" name="connectionMode" value="st" ${!custom ? 'checked' : ''}><span>酒馆当前连接</span></label><label><input type="radio" name="connectionMode" value="custom" ${custom ? 'checked' : ''}><span>独立兼容接口</span></label></div><div class="lw-custom-api ${custom ? '' : 'muted'}"><label>Base URL<input name="customBaseUrl" value="${e(settings.customBaseUrl)}" placeholder="https://provider.example/v1" autocomplete="off"></label><label>API Key<input type="password" name="customApiKey" value="${e(settings.customApiKey)}" placeholder="不会写入世界存档" autocomplete="off"></label><label>模型名<input name="customModel" list="lw-model-list" value="${e(settings.customModel)}" placeholder="model-name" autocomplete="off"></label><datalist id="lw-model-list"></datalist><div class="lw-custom-api-actions"><button type="button" class="lw-button" data-lw-action="fetch-models">${icon('refresh')}拉取模型列表</button><button type="button" class="lw-button" data-lw-action="test-api">${icon('check')}测试连接</button></div></div><p class="lw-field-help">Base URL 填到 /v1 或完整 /chat/completions。“拉取模型列表”会请求 /models 验证连通性并填入模型名下拉框；“测试连接”会真实生成一次 JSON 验证推演链路。酒馆连接模式使用 generateRaw 后台调用，模型跟随酒馆主 API。</p></section>
+      <section class="lw-settings-section lw-focus-section"><h3>派系、风声与相关性注入</h3><label class="lw-toggle-row"><span><strong>让世界模型自造内部派系</strong><small>开启后每轮可依据角色卡与局势提出新的内部派系，而不是只用内置名单</small></span><input type="checkbox" name="aiClans" ${settings.aiClans !== false ? 'checked' : ''}><i></i></label><label class="lw-toggle-row"><span><strong>按正文焦点注入</strong><small>世界仍然全量运转，但只把玩家所在地区、正文提到的人与其势力注入主 API</small></span><input type="checkbox" name="focusInjection" ${settings.focusInjection !== false ? 'checked' : ''}><i></i></label><div class="lw-field-grid"><label>焦点人物上限<input type="number" name="focusNpcLimit" min="3" max="16" value="${settings.focusNpcLimit}"></label><label>焦点势力上限<input type="number" name="focusFactionLimit" min="2" max="10" value="${settings.focusFactionLimit}"></label></div><p class="lw-field-help">风声分四层：官方通告传得最快也最可信，区域消息基本出不了本地，小道消息真假难辨，密闻几乎不扩散。层级与传播范围由推演决定，也可以在世界编辑器里逐个修改。</p></section>
+      <section class="lw-settings-section"><h3>日常、节令与存档压缩</h3><label class="lw-toggle-row"><span><strong>日常生活</strong><small>每轮让部分人物过自己的日子，产出不掷骰的生活细节</small></span><input type="checkbox" name="dailyLife" ${settings.dailyLife !== false ? 'checked' : ''}><i></i></label><div class="lw-field-grid"><label>每轮日常人物<input type="number" name="dailyActors" min="1" max="6" value="${settings.dailyActors}"></label><label>压缩间隔（成功推演次数）<input type="number" name="compressEvery" min="3" max="100" value="${settings.compressEvery}"><small>达到次数后把这段轮次压成一条纪要</small></label><label>一级合并为二级<input type="number" name="compressTier2Every" min="2" max="20" value="${settings.compressTier2Every}"><small>几条一级纪要合成一条辑要</small></label><label>二级合并为三级<input type="number" name="compressTier3Every" min="2" max="20" value="${settings.compressTier3Every}"><small>几条辑要合成一条纪年</small></label><label>未压缩保留轮次<input type="number" name="compressKeepRounds" min="0" max="40" value="${settings.compressKeepRounds}"><small>最近这些轮保持原样，保证细节不丢</small></label></div><label class="lw-toggle-row"><span><strong>启用存档压缩</strong><small>只用成功推演的轮次计数，重 roll 不会推动压缩</small></span><input type="checkbox" name="compressionEnabled" ${settings.compressionEnabled !== false ? 'checked' : ''}><i></i></label><label class="lw-toggle-row"><span><strong>节庆</strong><small>本地节日到日子会改变繁荣、动荡与物价</small></span><input type="checkbox" name="festivals" ${settings.festivals !== false ? 'checked' : ''}><i></i></label><label class="lw-prompt-wide">自定义节庆<textarea name="customFestivals" rows="3" maxlength="2000" placeholder="每行一个：名称|月-日|描述，例如&#10;灯河夜|7-15|全城放灯，河上挤满小船">${e(settings.customFestivals || '')}</textarea></label><p class="lw-field-help">节庆来源分三类：本地推演生成的、从角色卡世界书读到的、以及这里手写自定义的。压缩只处理已经写完的轮次，检查点与重 roll 逻辑不受影响。</p></section>
       <section class="lw-settings-section"><h3>规模与上下文</h3><div class="lw-field-grid"><label>核心 NPC 上限<input type="number" name="coreNpcLimit" min="1" max="100" value="${settings.coreNpcLimit}"></label><label>注入字符上限<input type="number" name="injectMaxChars" min="1000" max="30000" step="500" value="${settings.injectMaxChars}"></label><label>生成 Token 上限<input type="number" name="maxTokens" min="1000" max="64000" step="1000" value="${settings.maxTokens}"></label><label>请求超时（秒）<input type="number" name="requestTimeout" min="10" max="600" value="${settings.requestTimeout}"></label></div></section>
+      <section class="lw-settings-section lw-inject-section"><h3>注入主 API 的方式</h3><div class="lw-field-grid"><label>注入深度（距最新消息条数）<input type="number" name="injectDepth" min="0" max="8" value="${settings.injectDepth}"></label><label class="lw-inline-check"><input type="checkbox" name="injectGuide" ${settings.injectGuide !== false ? 'checked' : ''}><span>附带「世界档案｜既定事实 + 写作要求」结构</span></label></div><label class="lw-prompt-wide">附加写作要求<textarea name="injectGuideText" rows="3" maxlength="2000" placeholder="例如：请在正文中体现势力之间的试探与暗流，但不要直接点明数字与派系名称">${e(settings.injectGuideText || '')}</textarea></label><p class="lw-field-help">结构开启时，注入内容会以 system 身份、用 &lt;living_world&gt; 标签包裹，并附带「当作既定事实写进正文、不复述数字」等写作要求；深度 0 表示紧贴本轮输入，主 API 最不容易忽略。若你的主模型仍然大量复述条目，把深度调到 0 并关闭「附带写作要求」试一次，再对比效果。</p></section>
       <section class="lw-settings-section"><h3>用户世界编辑器</h3><details class="lw-world-editor" ${world ? '' : 'disabled'}><summary>直接修改当前世界 JSON</summary><p>可修改人物目标与位置、区域层级和天气、势力关系、事件进度、风声、玩家资金与声誉等全部内容。保存时会校验 ID、数值范围和地图连接。</p><textarea data-lw-world-editor spellcheck="false" rows="18" placeholder="初始化或导入世界后可编辑">${world ? e(JSON.stringify(world, null, 2)) : ''}</textarea><button type="button" class="lw-button lw-primary" data-lw-action="save-world-editor" ${world ? '' : 'disabled'}>${icon('check')}校验并保存世界修改</button></details></section>
       <section class="lw-settings-section"><h3>存档与维护</h3><div class="lw-settings-actions"><button type="button" class="lw-button" data-lw-action="export">${icon('download')}导出世界</button><button type="button" class="lw-button" data-lw-action="import">${icon('upload')}导入世界</button><button type="button" class="lw-button" data-lw-action="cancel-evolve">${icon('stop')}取消后台推演</button><button type="button" class="lw-button lw-danger-button" data-lw-action="reset">${icon('alert')}重建世界</button></div><p class="lw-field-help">世界按聊天保存；导出文件不包含 API Key。重建会清除当前聊天的世界与检查点。推演进行中可点击“取消后台推演”或面板顶部的停止按钮立即中止，本轮不会写入世界。</p></section>
       <div class="lw-settings-footer"><button type="submit" class="lw-button lw-primary">${icon('check')}保存设置</button></div>

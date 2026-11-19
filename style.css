@@ -633,3 +633,108 @@
 @media (prefers-reduced-motion: reduce) {
   #living-world-root *, #living-world-root *::before, #living-world-root *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* --- 地图交互：滚轮缩放 / 拖动平移 --- */
+.lw-map-canvas { touch-action: none; cursor: grab; }
+.lw-map-canvas.is-panning { cursor: grabbing; }
+.lw-map-canvas > svg { touch-action: none; }
+.lw-map-viewport { transform-origin: 0 0; }
+.lw-map-actions { display: flex; align-items: center; gap: 6px; }
+.lw-map-zoom-value { min-width: 42px; color: var(--lw-muted); font-family: var(--lw-display); font-size: 11px; text-align: center; }
+.lw-map-hint { position: absolute; right: 14px; top: 12px; padding: 4px 9px; border: 1px solid var(--lw-line); border-radius: 999px; background: rgba(9, 21, 17, .72); color: var(--lw-faint); font-size: 8px; pointer-events: none; opacity: .85; }
+.lw-map-canvas:hover .lw-map-hint { opacity: 0; transition: opacity .4s ease .6s; }
+#living-world-root[data-theme="light"] .lw-map-hint { background: rgba(244, 246, 240, .82); }
+
+/* --- 势力分层与内部派系 --- */
+.lw-tier-label { fill: var(--lw-faint); font-family: var(--lw-display); font-size: 11px; letter-spacing: .08em; }
+.lw-faction-clan-badge { fill: var(--lw-amber); font-size: 8px; letter-spacing: .05em; }
+.lw-relation-edge { stroke: rgba(133, 157, 147, .35); }
+.lw-relation-edge.entangled { stroke-dasharray: 9 5; }
+.lw-graph-legend .entangled { color: var(--lw-amber); }
+.lw-graph-legend .entangled::before { background: repeating-linear-gradient(90deg, currentColor 0 5px, transparent 5px 9px); }
+.lw-faction-tier { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 2px; }
+.lw-faction-tier span { padding: 3px 8px; border: 1px solid var(--lw-line); border-radius: 999px; color: var(--lw-muted); font-size: 9px; }
+.lw-clan-list { display: flex; flex-direction: column; gap: 1px; margin-bottom: 18px; }
+.lw-clan-row { padding: 9px 0; border-bottom: 1px solid var(--lw-line); }
+.lw-clan-row header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.lw-clan-row strong { font-size: 10px; font-weight: 500; }
+.lw-clan-demand { color: var(--lw-teal); font-size: 8px; }
+.lw-clan-meters { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 6px 0 4px; }
+.lw-clan-meters small { color: var(--lw-faint); font-size: 8px; }
+.lw-clan-meters b { float: right; color: var(--lw-muted); font-size: 9px; font-weight: 400; }
+.lw-clan-meters .lw-meter { clear: both; margin-top: 4px; }
+.lw-clan-note { display: block; color: var(--lw-faint); font-size: 8px; line-height: 1.6; }
+.lw-faction-relation { display: block; padding: 11px 0; border-bottom: 1px solid var(--lw-line); }
+.lw-faction-relation header { display: flex; align-items: center; gap: 7px; }
+.lw-faction-relation header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.lw-faction-relation header b { color: var(--lw-muted); font-size: 9px; font-weight: 400; }
+.lw-faction-relation > small { display: block; margin-top: 5px; color: var(--lw-faint); font-size: 8px; }
+.lw-relation-dimensions { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; margin-top: 7px; }
+.lw-relation-dimension { display: flex; flex-direction: column; gap: 3px; align-items: center; }
+.lw-relation-dimension small { color: var(--lw-faint); font-size: 7px; }
+.lw-relation-dimension i { display: block; width: 100%; height: 3px; border-radius: 2px; background: var(--lw-line); position: relative; overflow: hidden; }
+.lw-relation-dimension i::after { content: ""; position: absolute; inset: 0 auto 0 0; width: calc(var(--score) * 1%); background: var(--lw-teal); }
+.lw-relation-dimension i.tone-warm::after { background: var(--lw-teal); }
+.lw-relation-dimension i.tone-cool::after { background: #6a8cb8; }
+.lw-relation-dimension i.tone-neutral::after { background: var(--lw-muted); }
+.lw-relation-dimension i.tone-threat::after { background: var(--lw-red); }
+.lw-relation-dimension b { color: var(--lw-muted); font-size: 8px; font-weight: 400; }
+.lw-relation-tension { margin-top: 6px; color: var(--lw-amber); font-size: 9px; line-height: 1.6; }
+.lw-inline-check { display: flex !important; align-items: center; gap: 8px; color: var(--lw-muted); font-size: 10px; }
+.lw-inline-check input { width: auto; }
+.lw-inject-section .lw-prompt-wide { margin-top: 10px; }
+
+@media (max-width: 900px) {
+  .lw-relation-dimensions { grid-template-columns: repeat(3, 1fr); }
+  .lw-clan-meters { grid-template-columns: 1fr; }
+}
+
+/* ---- 人物关系图（可切回卡片视图） ---- */
+.lw-mode-switch { display: inline-flex; border: 1px solid var(--lw-line); border-radius: 999px; overflow: hidden; background: var(--lw-surface-2); }
+.lw-mode-switch button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border: 0; background: transparent; color: var(--lw-muted); font-size: 11px; cursor: pointer; transition: .18s; }
+.lw-mode-switch button:hover { color: var(--lw-text); }
+.lw-mode-switch button.is-active { background: color-mix(in srgb, var(--lw-teal) 16%, transparent); color: var(--lw-teal); }
+.lw-people-graph-layout { display: grid; grid-template-columns: minmax(0, 1fr) 285px; gap: 14px; min-height: 560px; }
+.lw-people-graph-canvas { position: relative; min-width: 0; overflow: hidden; border: 1px solid var(--lw-line); border-radius: 12px; background: radial-gradient(circle at 50% 45%, #122a24, #091511 78%); }
+.lw-people-graph-canvas > svg { display: block; width: 100%; height: 100%; min-height: 530px; color: rgba(115, 162, 146, .09); }
+.lw-person-edge { stroke-linecap: round; }
+.lw-person-edge.warm { stroke: rgba(103, 216, 193, .5); }
+.lw-person-edge.neutral { stroke: rgba(133, 157, 147, .24); stroke-dasharray: 2 5; }
+.lw-person-edge.hostile { stroke: rgba(228, 126, 120, .55); stroke-dasharray: 6 4; }
+.lw-person-edge.is-focus { stroke-opacity: 1; }
+.lw-person-node { cursor: pointer; outline: none; }
+.lw-person-node circle { transition: .2s; }
+.lw-person-node:hover circle, .lw-person-node.is-focus circle { stroke: var(--lw-amber); }
+.lw-person-node-initial { fill: #07110f; font-family: var(--lw-display); font-size: 15px; font-weight: 600; pointer-events: none; }
+.lw-person-node-name { fill: #dce9e2; font-family: var(--lw-display); font-size: 11px; pointer-events: none; }
+.lw-person-node-role { fill: #718e81; font-size: 8px; pointer-events: none; }
+.lw-people-graph-side { display: flex; flex-direction: column; gap: 10px; padding: 15px; border: 1px solid var(--lw-line); border-radius: 12px; background: var(--lw-surface); overflow-y: auto; max-height: 620px; }
+.lw-people-graph-side h4 { margin: 4px 0 0; font-size: 11px; letter-spacing: .14em; color: var(--lw-faint); text-transform: uppercase; }
+.lw-graph-focus h3 { margin: 2px 0 4px; font-family: var(--lw-display); font-size: 17px; }
+.lw-graph-focus p, .lw-graph-focus small { margin: 0; color: var(--lw-muted); font-size: 11px; line-height: 1.7; }
+.lw-relation-list { display: flex; flex-direction: column; gap: 7px; }
+.lw-relation-row { display: flex; flex-direction: column; gap: 3px; padding: 8px 9px; border: 1px solid var(--lw-line); border-left-width: 2px; border-radius: 8px; background: var(--lw-surface-2); }
+.lw-relation-row.warm { border-left-color: var(--lw-teal); }
+.lw-relation-row.hostile { border-left-color: var(--lw-red); }
+.lw-relation-row.neutral { border-left-color: var(--lw-line-strong); }
+.lw-relation-who { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.lw-relation-who strong { font-size: 12px; }
+.lw-relation-who small { color: var(--lw-faint); font-size: 10px; }
+.lw-relation-meters { display: flex; flex-wrap: wrap; gap: 8px; color: var(--lw-muted); font-size: 10px; }
+
+/* ---- 编年纪要条 ---- */
+.lw-chronicle-strip { display: flex; align-items: center; gap: 16px; margin: 12px 0 0; padding: 10px 14px; border: 1px solid var(--lw-line); border-radius: 10px; background: var(--lw-surface-2); color: var(--lw-muted); font-size: 11px; }
+.lw-chronicle-strip strong { margin-right: 3px; color: var(--lw-amber); font-family: var(--lw-display); font-size: 14px; }
+.lw-chronicle-strip small { margin-left: auto; color: var(--lw-faint); font-size: 10px; }
+
+@media (max-width: 900px) {
+  .lw-people-graph-layout { grid-template-columns: minmax(0, 1fr); }
+  .lw-people-graph-side { max-height: none; }
+  .lw-chronicle-strip { flex-wrap: wrap; gap: 10px; }
+  .lw-chronicle-strip small { margin-left: 0; width: 100%; }
+}
+
+#living-world-root[data-theme="light"] .lw-people-graph-canvas { background: radial-gradient(circle at 50% 45%, #f4f8f5, #e6eee9 78%); }
+#living-world-root[data-theme="light"] .lw-person-node-name { fill: #1d2c26; }
+#living-world-root[data-theme="light"] .lw-person-node-role { fill: #64796f; }
+#living-world-root[data-theme="light"] .lw-person-node-initial { fill: #ffffff; }

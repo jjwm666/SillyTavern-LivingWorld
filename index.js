@@ -1,6 +1,7 @@
 import { CHECKPOINT_KEY, DEFAULT_SETTINGS, SETTINGS_KEY, PROMPT_KEY } from './src/engine/constants.js';
 import { buildBootstrapPrompt, buildEvolutionPrompt } from './src/engine/director.js';
 import { createWorldFromBootstrap, normalizeWorld, addLog } from './src/engine/state.js';
+import { isNewerThanSupported, migrateWorld } from './src/engine/migrations.js';
 import { evolveWorld } from './src/engine/simulation.js';
 import { deepClone, downloadJson, hashString, safeJsonParse } from './src/engine/utils.js';
 import { WorldAPI } from './src/integration/api.js';
@@ -9,6 +10,24 @@ import { selectBaseline, selectRollback, WorldStore } from './src/integration/st
 import { LivingWorldPanel } from './src/ui/panel.js';
 
 let controller = null;
+
+/** 世界书摘要：派系名、节庆与地方称呼往往只写在世界书里，必须让世界模型看到。 */
+function worldbookDigest(context, maxChars = 6000) {
+  const names = context?.worldInfo || context?.world_info;
+  const entries = Array.isArray(names)
+    ? names
+    : Object.values(names || {});
+  const chunks = [];
+  for (const entry of entries) {
+    if (!entry || entry.disable) continue;
+    const content = String(entry.content || entry.value || '').replace(/\s+/g, ' ').trim();
+    if (!content) continue;
+    const label = String(entry.comment || entry.key || entry.keys?.join('/') || '');
+    chunks.push(label ? `${label}：${content}` : content);
+    if (chunks.join('\n').length > maxChars) break;
+  }
+  return chunks.join('\n').slice(0, maxChars);
+}
 
 globalThis.livingWorldGenerateInterceptor = async function(chat, contextSize, abort, type) {
   return controller?.prepareGeneration(chat, contextSize, abort, type);
@@ -94,8 +113,14 @@ class LivingWorldController {
     if (token !== this.chatToken) return;
     this.world = world;
     this.status = { kind: 'idle', message: world ? '已载入当前聊天世界' : '当前聊天尚未建立世界' };
+    const migration = this.store.lastMigration;
+    this.store.lastMigration = null;
+    if (world && migration) {
+      this.status = { kind: 'ready', message: `旧存档已从 v${migration.from} 迁移到 v${migration.to}` };
+    }
     this.panel.setData({ world: this.world, settings: this.getSettings(), status: this.status });
     this.refreshInjection();
+    if (world && migration) this.announce(`旧存档已自动迁移到 v${migration.to}，原数据保持不变`, 'info');
   }
 
   setStatus(kind, message) {
@@ -144,11 +169,23 @@ class LivingWorldController {
     const context = this.context();
     if (!context.setExtensionPrompt) return;
     const settings = this.getSettings();
+    const depth = Math.max(0, Math.min(8, Number(settings.injectDepth) || 0));
+    // 焦点注入依赖最近对话：正文写在哪儿，就注入哪儿。
+    const conversation = extractRecentConversation(context.chat, 6, 6000);
     const value = this.world ? buildWorldContext(this.world, {
       maxChars: settings.injectMaxChars,
       includeSecrets: settings.includeSecrets,
+      preset: settings.promptPreset,
+      guide: settings.injectGuide !== false,
+      injectGuide: typeof settings.injectGuideText === 'string' ? settings.injectGuideText : '',
+      conversation,
+      focusInjection: settings.focusInjection !== false,
+      focusNpcLimit: settings.focusNpcLimit,
+      focusFactionLimit: settings.focusFactionLimit,
     }) : '';
-    context.setExtensionPrompt(PROMPT_KEY, value, 1, 2, false, 0);
+    // position 1 = 插在聊天记录中；depth 0 = 紧贴本轮输入，主 API 最不容易忽略。
+    // role 0 = system，避免被当成用户发言的一部分。
+    context.setExtensionPrompt(PROMPT_KEY, value, 1, depth, false, 0);
   }
 
   buildMaterial() {
@@ -165,6 +202,7 @@ class LivingWorldController {
         creatorNotes: data.creator_notes || '',
       },
       group: context.groups?.[context.groupId]?.name || '',
+      worldInfo: worldbookDigest(context),
       recentConversation: extractRecentConversation(context.chat, 14, 18000),
     }, null, 2);
   }
@@ -185,6 +223,11 @@ class LivingWorldController {
           coreNpcLimit: this.getSettings().coreNpcLimit,
           seed: hashString(`${this.store.chatKey()}:${Date.now()}`),
         });
+        // 节庆来源要可追溯：世界书里写过的算 worldbook，其余是本地推断。
+        const digest = worldbookDigest(this.context());
+        for (const festival of world.festivals || []) {
+          if (digest && digest.includes(festival.name)) festival.origin = 'worldbook';
+        }
         addLog(world, { type: 'world', title: '世界模拟开始', detail: '地图、势力与核心人物已经建立，后续行动将由意图与骰子共同结算。' });
         await this.store.clear();
         this.world = world;
@@ -346,13 +389,16 @@ class LivingWorldController {
   async importWorld(raw) {
     try {
       const parsed = safeJsonParse(raw);
-      const world = normalizeWorld(parsed, { coreNpcLimit: this.getSettings().coreNpcLimit });
+      if (isNewerThanSupported(parsed)) throw new Error('该存档由更新版本的插件生成，请先升级插件');
+      const migration = migrateWorld(parsed);
+      const world = normalizeWorld(migration.world, { coreNpcLimit: this.getSettings().coreNpcLimit });
       await this.store.clear();
       this.world = world;
       await this.store.save(world);
-      this.panel.setData({ world, settings: this.getSettings(), status: { kind: 'ready', message: '世界导入完成' } });
+      const message = migration.migrated ? `世界导入完成（已从 v${migration.fromVersion} 迁移到 v${migration.toVersion}）` : '世界导入完成';
+      this.panel.setData({ world, settings: this.getSettings(), status: { kind: 'ready', message } });
       this.refreshInjection();
-      this.panel.notify('世界存档导入完成', 'success');
+      this.panel.notify(message, 'success');
     } catch (error) {
       this.panel.notify(`导入失败：${error.message}`, 'error');
     }
@@ -361,7 +407,8 @@ class LivingWorldController {
   async editWorld(raw) {
     try {
       const parsed = typeof raw === 'string' ? safeJsonParse(raw) : raw;
-      const world = normalizeWorld(parsed, { coreNpcLimit: this.getSettings().coreNpcLimit });
+      if (isNewerThanSupported(parsed)) throw new Error('该存档结构比当前插件更新');
+      const world = normalizeWorld(migrateWorld(parsed).world, { coreNpcLimit: this.getSettings().coreNpcLimit });
       addLog(world, { type: 'world', title: '用户修订世界内容', detail: '用户通过世界编辑器保存了一次修订。', public: false });
       this.world = world;
       await this.store.save(world);
