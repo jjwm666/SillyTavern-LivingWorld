@@ -738,3 +738,79 @@
 #living-world-root[data-theme="light"] .lw-person-node-name { fill: #1d2c26; }
 #living-world-root[data-theme="light"] .lw-person-node-role { fill: #64796f; }
 #living-world-root[data-theme="light"] .lw-person-node-initial { fill: #ffffff; }
+
+/* ---- 视口（地图 / 关系图 / 势力图共用）：滚轮缩放、拖动平移、双指缩放 ---- */
+.lw-zoomable { touch-action: none; cursor: grab; overscroll-behavior: contain; }
+.lw-zoomable.is-panning { cursor: grabbing; }
+.lw-zoomable > svg { touch-action: none; }
+.lw-zoom-actions { display: inline-flex; align-items: center; gap: 4px; }
+.lw-toolbar .lw-zoom-actions { margin-left: auto; }
+
+/* ---- 可折叠面板：数值多的项目默认收起 ---- */
+.lw-fold { border: 1px solid var(--lw-line); border-radius: 10px; margin: 8px 0; background: color-mix(in srgb, var(--lw-surface-2) 60%, transparent); }
+.lw-fold > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 11px; cursor: pointer; font-size: 11.5px; color: var(--lw-muted); list-style: none; }
+.lw-fold > summary::-webkit-details-marker { display: none; }
+.lw-fold > summary::before { content: "▸"; margin-right: 6px; color: var(--lw-teal); transition: transform .18s ease; }
+.lw-fold[open] > summary::before { content: "▾"; }
+.lw-fold > summary:hover { color: var(--lw-text); }
+.lw-fold > summary small { font-size: 10.5px; color: var(--lw-muted); opacity: .8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lw-fold-body { padding: 2px 11px 10px; }
+.lw-fold-body .lw-faction-resources { margin-top: 6px; }
+
+/* ---- 派系：人心 / 势力 / 与其他派系关系 ---- */
+.lw-clan-row .lw-clan-meters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.lw-clan-standing { font-size: 11px; font-weight: 600; }
+.lw-clan-standing.positive { color: var(--lw-teal); }
+.lw-clan-standing.negative { color: #e47777; }
+.lw-clan-standing.neutral { color: var(--lw-muted); }
+.lw-graph-focus-actions { display: flex; gap: 8px; margin-top: 10px; }
+.lw-graph-focus-actions .lw-button { font-size: 11px; padding: 5px 10px; }
+
+@media (max-width: 900px) {
+  .lw-clan-row .lw-clan-meters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lw-toolbar { flex-wrap: wrap; gap: 8px; }
+}
+#living-world-root[data-theme="light"] .lw-fold { background: #f4f6f1; border-color: #dbe1d6; }
+
+/* ---- 折叠面板：设置、概览、生涯、地图侧栏、事件、骰点、人物名片 ---- */
+.lw-fold { overflow: hidden; }
+.lw-fold > summary > span { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 auto; }
+.lw-fold > summary h3 { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--lw-text); letter-spacing: .02em; }
+.lw-fold > summary h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--lw-text); }
+.lw-fold > summary .lw-section-heading { margin: 0; width: 100%; }
+.lw-fold > summary .lw-section-heading h2 { font-size: 15px; }
+.lw-fold > summary .lw-text-button,
+.lw-fold > summary .lw-icon-button { flex: 0 0 auto; }
+.lw-fold > summary .lw-kicker { display: block; }
+
+/* 设置页：每一节都是折叠卡片，标题常显、字段可收 */
+.lw-fold.lw-settings-section { margin: 0 0 10px; padding: 0; border-radius: 12px; }
+.lw-fold.lw-settings-section > summary { padding: 11px 14px; background: color-mix(in srgb, var(--lw-surface-2) 70%, transparent); }
+.lw-fold.lw-settings-section > summary h3 { margin: 0; font-size: 13px; }
+.lw-fold.lw-settings-section .lw-fold-body { padding: 4px 14px 14px; }
+
+/* 概览 / 生涯网格中的折叠卡片保持原来的栅格占位 */
+.lw-dashboard-grid > .lw-fold,
+.lw-career-grid > .lw-fold { margin: 0; background: color-mix(in srgb, var(--lw-surface-2) 55%, transparent); }
+.lw-dashboard-grid > .lw-fold > summary,
+.lw-career-grid > .lw-fold > summary { padding: 10px 14px; }
+.lw-dashboard-grid > .lw-fold > .lw-fold-body,
+.lw-career-grid > .lw-fold > .lw-fold-body { padding: 0 14px 12px; }
+.lw-fold.lw-economy-card { align-items: stretch; }
+
+/* 地图侧栏 / 人物名片里的折叠块 */
+.lw-region-detail > .lw-fold { margin: 10px 0 0; }
+.lw-inspector-content > .lw-fold { margin: 10px 0 0; }
+.lw-inspector-content > .lw-fold > summary { padding: 8px 10px; }
+
+/* 事件与骰点页：整段内容可收起 */
+.lw-view-enter > .lw-fold { margin: 10px 0 14px; }
+.lw-view-enter > .lw-fold > summary { padding: 9px 12px; }
+
+@media (max-width: 900px) {
+  .lw-dashboard-grid > .lw-fold > summary,
+  .lw-career-grid > .lw-fold > summary { padding: 9px 11px; }
+}
+#living-world-root[data-theme="light"] .lw-fold.lw-settings-section > summary { background: #eef2ea; }
+.lw-fold.lw-settings-section > summary { justify-content: flex-start; gap: 8px; }
+.lw-fold.lw-settings-section > summary h3 { flex: 1 1 auto; }

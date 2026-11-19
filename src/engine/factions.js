@@ -235,6 +235,38 @@ export function describeClan(clan) {
   return `${clan.name}（${demand.label}｜强${clan.strength}｜满意${clan.satisfaction}）`;
 }
 
+/** 派系的对外立场：由诉求推导，用于界面「与其他势力关系」一列。 */
+const CLAN_STANCES = Object.freeze({
+  expansion: '主战',
+  profit: '通商',
+  security: '守成',
+  vengeance: '复仇',
+  reform: '清议',
+});
+
+export function clanStance(clan) {
+  const key = resolveClanDemand(clan?.demand) || 'security';
+  return CLAN_STANCES[key] || '观望';
+}
+
+/** 派系之间的关系：同诉求为同调，诉求互相冲撞为相争，其余各自观望。
+ *  返回 { tone, label, partner }，供界面显示「与谁同调 / 与谁相争」。 */
+export function clanStanding(faction, clan) {
+  const others = asArray(faction?.clans).filter((item) => item && item.id !== clan?.id);
+  if (!clan || !others.length) return { tone: 'neutral', label: '尚无对手', partner: null };
+  const demand = clanDemandOf(clan);
+  const ally = others.find((item) => clanDemandOf(item) === demand);
+  if (ally) return { tone: 'positive', label: '同调', partner: ally.name };
+  const rival = others.find((item) => {
+    const other = clanDemandOf(item);
+    return other.push.some((action) => demand.against.includes(action)) || demand.push.some((action) => other.against.includes(action));
+  });
+  if (rival) return { tone: 'negative', label: '相争', partner: rival.name };
+  const other = others[0];
+  return { tone: 'neutral', label: '观望', partner: other.name };
+}
+
+
 export function computeFactionCohesion(clans) {
   const list = asArray(clans).filter(Boolean);
   if (!list.length) return 55;

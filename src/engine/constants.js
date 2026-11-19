@@ -139,12 +139,13 @@ export const CLAN_NAMES = Object.freeze([
   '激进派', '务实派', '守旧派', '少壮派', '元老派', '外务派', '军中派', '清议派', '商团派', '乡土派',
 ]);
 
-/** 势力分层：层级决定首领权威基线、内部派系数量与影响力加成。 */
+/** 势力分层：层级决定首领权威基线、内部派系数量与影响力加成。
+ *  层级名用纯数字（一级最高），避免把「霸主/诸侯」这类特定世界观称谓套到别的卡片上。 */
 export const FACTION_TIERS = Object.freeze([
-  Object.freeze({ id: 'hegemon', label: '霸主', rank: 4, authorityBase: 68, clanRange: [3, 4], influenceBonus: 14, description: '足以改写区域秩序的中心权力' }),
-  Object.freeze({ id: 'great', label: '雄主', rank: 3, authorityBase: 60, clanRange: [3, 4], influenceBonus: 9, description: '拥有稳定基本盘与对外投射能力的强权' }),
-  Object.freeze({ id: 'regional', label: '诸侯', rank: 2, authorityBase: 52, clanRange: [2, 3], influenceBonus: 4, description: '在本地有实质控制力，但受制于更大势力' }),
-  Object.freeze({ id: 'local', label: '地方', rank: 1, authorityBase: 44, clanRange: [2, 2], influenceBonus: 0, description: '依附于地方环境的小型组织' }),
+  Object.freeze({ id: 'hegemon', label: '一级', rank: 4, authorityBase: 68, clanRange: [3, 4], influenceBonus: 14, description: '足以改写区域秩序的中心权力' }),
+  Object.freeze({ id: 'great', label: '二级', rank: 3, authorityBase: 60, clanRange: [3, 4], influenceBonus: 9, description: '拥有稳定基本盘与对外投射能力的强权' }),
+  Object.freeze({ id: 'regional', label: '三级', rank: 2, authorityBase: 52, clanRange: [2, 3], influenceBonus: 4, description: '在本地有实质控制力，但受制于更大势力' }),
+  Object.freeze({ id: 'local', label: '四级', rank: 1, authorityBase: 44, clanRange: [2, 2], influenceBonus: 0, description: '依附于地方环境的小型组织' }),
 ]);
 
 export const FACTION_TIER_IDS = Object.freeze(FACTION_TIERS.map((tier) => tier.id));

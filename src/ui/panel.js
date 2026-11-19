@@ -31,10 +31,17 @@ export class LivingWorldPanel {
     this.peopleSearch = '';
     this.peopleMode = 'list';
     this.peopleFocusId = null;
-    this.mapView = normalizeMapView({});
+    this.viewStates = {
+      map: normalizeMapView({}),
+      people: normalizeMapView({}),
+      factions: normalizeMapView({}),
+    };
     this.mapPath = [];
     this.diceFilter = 'all';
     this.pointerGesture = null;
+    this.pointers = new Map();
+    this.pinchGesture = null;
+    this.folds = new Map();
     this.root = null;
     this.opened = false;
     this.handleClick = this.handleClick.bind(this);
@@ -81,6 +88,7 @@ export class LivingWorldPanel {
     this.root.addEventListener('pointercancel', this.handlePointerUp);
     this.root.addEventListener('wheel', this.handleWheel, { passive: false });
     this.root.addEventListener('dblclick', this.handleDoubleClick);
+    this.root.addEventListener('toggle', this.handleFoldToggle, true);
     document.addEventListener('keydown', this.handleKeydown);
     this.applyAppearance();
     this.render();
@@ -138,9 +146,9 @@ export class LivingWorldPanel {
     } else {
       switch (this.activeTab) {
         case 'player': content.innerHTML = renderPlayer(this.world); break;
-        case 'people': content.innerHTML = renderPeople(this.world, this.peopleSearch, this.peopleMode, this.peopleFocusId); break;
-        case 'map': content.innerHTML = renderMap(this.world, this.selectedRegionId, this.mapView, this.getMapScope()); break;
-        case 'factions': content.innerHTML = renderFactions(this.world, this.selectedFactionId); break;
+        case 'people': content.innerHTML = renderPeople(this.world, this.peopleSearch, this.peopleMode, this.peopleFocusId, this.viewStates.people); break;
+        case 'map': content.innerHTML = renderMap(this.world, this.selectedRegionId, this.viewStates.map, this.getMapScope()); break;
+        case 'factions': content.innerHTML = renderFactions(this.world, this.selectedFactionId, this.viewStates.factions); break;
         case 'events': content.innerHTML = renderEvents(this.world); break;
         case 'dice': content.innerHTML = renderDice(this.world, this.diceFilter); break;
         case 'settings': content.innerHTML = renderSettings(this.settings, this.status, this.world); break;
@@ -148,6 +156,23 @@ export class LivingWorldPanel {
       }
     }
     this.renderInspector();
+    this.applyFoldState();
+  }
+
+  /** 折叠状态存在面板实例上，重绘后按 key 还原，切页签也不会被重置。 */
+  applyFoldState() {
+    if (!this.root) return;
+    for (const node of this.root.querySelectorAll('[data-fold-key]')) {
+      const key = node.dataset.foldKey;
+      if (!key || !this.folds.has(key)) continue;
+      node.open = this.folds.get(key);
+    }
+  }
+
+  handleFoldToggle(event) {
+    const node = event.target;
+    if (!node?.dataset?.foldKey) return;
+    this.folds.set(node.dataset.foldKey, node.open);
   }
 
   getMapScope() {
@@ -213,6 +238,8 @@ export class LivingWorldPanel {
     const target = event.target.closest('[data-lw-action]');
     if (!target || !this.root.contains(target)) return;
     const action = target.dataset.lwAction;
+    // 折叠块标题里的按钮只执行自身动作，不要连带收起面板。
+    if (target.closest('summary')) event.preventDefault();
     if (action === 'toggle') {
       if (this.suppressFloatingClick) { this.suppressFloatingClick = false; return; }
       return this.toggle();
@@ -254,8 +281,19 @@ export class LivingWorldPanel {
     if (action === 'npc-focus') {
       const id = target.dataset.id;
       this.peopleFocusId = this.peopleFocusId === id ? null : id;
-      this.selectedNpcId = this.peopleFocusId;
+      this.viewStates.people = normalizeMapView({});
       this.render();
+      return;
+    }
+    if (action === 'npc-focus-clear') {
+      this.peopleFocusId = null;
+      this.viewStates.people = normalizeMapView({});
+      this.render();
+      return;
+    }
+    if (action === 'npc-card') {
+      this.selectedNpcId = target.dataset.id;
+      this.renderInspector();
       return;
     }
     if (action === 'region-select') {
@@ -277,7 +315,7 @@ export class LivingWorldPanel {
       if (region?.children?.length) {
         this.mapPath.push(region.id);
         this.selectedRegionId = region.children[0].id;
-        this.mapView = normalizeMapView({});
+        this.viewStates.map = normalizeMapView({});
         this.render();
       }
       return;
@@ -314,13 +352,13 @@ export class LivingWorldPanel {
       this.render();
       return;
     }
-    if (action === 'map-zoom-in' || action === 'map-zoom-out') {
-      this.zoomMapBy(action === 'map-zoom-in' ? 1.25 : 0.8);
+    if (action === 'view-zoom-in' || action === 'view-zoom-out') {
+      const key = target.dataset.key || 'map';
+      this.zoomView(key, action === 'view-zoom-in' ? 1.25 : 0.8);
       return;
     }
-    if (action === 'map-zoom-reset') {
-      this.mapView = normalizeMapView({});
-      this.applyMapViewport();
+    if (action === 'view-zoom-reset') {
+      this.resetView(target.dataset.key || 'map');
       return;
     }
     if (action === 'apply-prompt-preset') {
@@ -460,16 +498,25 @@ export class LivingWorldPanel {
     await this.callbacks.onSettingsChange?.(settings);
   }
 
-  mapCanvas() {
-    return this.root?.querySelector('[data-lw-map-canvas]') || null;
+  viewCanvas(key) {
+    return this.root?.querySelector(`[data-lw-pan-zoom="${key}"]`) || null;
   }
 
-  mapSvg() {
-    return this.mapCanvas()?.querySelector('svg') || null;
+  viewSvg(key) {
+    return this.viewCanvas(key)?.querySelector('svg') || null;
   }
 
-  mapPoint(clientX, clientY) {
-    const svg = this.mapSvg();
+  viewKeyOf(target) {
+    const canvas = target?.closest?.('[data-lw-pan-zoom]');
+    return canvas?.getAttribute('data-lw-pan-zoom') || null;
+  }
+
+  viewState(key) {
+    return normalizeMapView(this.viewStates[key] || {});
+  }
+
+  pointInView(key, clientX, clientY) {
+    const svg = this.viewSvg(key);
     if (!svg) return null;
     if (svg.getScreenCTM && typeof DOMPoint === 'function') {
       const matrix = svg.getScreenCTM();
@@ -480,70 +527,150 @@ export class LivingWorldPanel {
     }
     const rect = svg.getBoundingClientRect?.();
     if (!rect || !rect.width || !rect.height) return null;
-    return { x: (clientX - rect.left) / rect.width * 1000, y: (clientY - rect.top) / rect.height * 560 };
+    const box = String(svg.getAttribute('viewBox') || '').split(/\s+/).map(Number);
+    const [vx, vy, vw, vh] = box.length === 4 && box.every((value) => Number.isFinite(value)) ? box : [0, 0, 1000, 560];
+    return { x: vx + (clientX - rect.left) / rect.width * vw, y: vy + (clientY - rect.top) / rect.height * vh };
   }
 
-  applyMapViewport() {
-    const group = this.root?.querySelector('[data-lw-map-viewport]');
-    if (!group) return;
-    const { scale, x, y } = this.mapView;
-    group.setAttribute('transform', `translate(${x.toFixed(2)} ${y.toFixed(2)}) scale(${scale.toFixed(4)})`);
-    const label = this.root?.querySelector('[data-lw-map-zoom-value]');
+  viewCenter(key) {
+    const svg = this.viewSvg(key);
+    const box = String(svg?.getAttribute('viewBox') || '').split(/\s+/).map(Number);
+    if (box.length === 4 && box.every((value) => Number.isFinite(value))) {
+      return { x: box[0] + box[2] / 2, y: box[1] + box[3] / 2 };
+    }
+    return { x: 500, y: 280 };
+  }
+
+  applyViewport(key) {
+    const canvas = this.viewCanvas(key);
+    if (!canvas) return;
+    const { scale, x, y } = this.viewState(key);
+    const group = canvas.querySelector('[data-lw-viewport]');
+    if (group) group.setAttribute('transform', `translate(${x.toFixed(2)} ${y.toFixed(2)}) scale(${scale.toFixed(4)})`);
+    const label = canvas.querySelector('[data-lw-zoom-value]');
     if (label) label.textContent = `${Math.round(scale * 100)}%`;
   }
 
-  setMapScale(nextScale, anchor = null) {
+  setViewScale(key, nextScale, anchor = null) {
+    const current = this.viewState(key);
     const target = Math.min(MAP_MAX_SCALE, Math.max(MAP_MIN_SCALE, Number(nextScale) || 1));
-    const previous = this.mapView.scale || 1;
-    if (Math.abs(target - previous) < 0.0001) return;
-    const origin = anchor || { x: 500, y: 280 };
-    const ratio = target / previous;
-    this.mapView = {
+    if (Math.abs(target - current.scale) < 0.0001) return;
+    const center = anchor || this.viewCenter(key);
+    const ratio = target / current.scale;
+    this.viewStates[key] = {
       scale: target,
-      x: origin.x - (origin.x - this.mapView.x) * ratio,
-      y: origin.y - (origin.y - this.mapView.y) * ratio,
+      x: center.x - (center.x - current.x) * ratio,
+      y: center.y - (center.y - current.y) * ratio,
     };
-    this.applyMapViewport();
+    this.applyViewport(key);
   }
 
-  zoomMapBy(factor, clientX, clientY) {
-    const anchor = Number.isFinite(clientX) && Number.isFinite(clientY) ? this.mapPoint(clientX, clientY) : null;
-    this.setMapScale((this.mapView.scale || 1) * factor, anchor);
+  zoomView(key, factor, clientX, clientY) {
+    const anchor = Number.isFinite(clientX) && Number.isFinite(clientY) ? this.pointInView(key, clientX, clientY) : null;
+    this.setViewScale(key, this.viewState(key).scale * factor, anchor);
+  }
+
+  resetView(key) {
+    this.viewStates[key] = normalizeMapView({});
+    this.applyViewport(key);
   }
 
   handleWheel(event) {
-    const canvas = event.target?.closest?.('[data-lw-map-canvas]');
-    if (!canvas) return;
+    const key = this.viewKeyOf(event.target);
+    if (!key) return;
     event.preventDefault();
     const step = event.deltaMode === 1 ? 0.05 : 0.0015;
-    this.zoomMapBy(Math.exp(-event.deltaY * step), event.clientX, event.clientY);
+    this.zoomView(key, Math.exp(-event.deltaY * step), event.clientX, event.clientY);
   }
 
   handleDoubleClick(event) {
-    const canvas = event.target?.closest?.('[data-lw-map-canvas]');
-    if (!canvas || event.target.closest('.lw-map-node')) return;
-    this.mapView = normalizeMapView({});
-    this.applyMapViewport();
+    const key = this.viewKeyOf(event.target);
+    if (!key || event.target.closest('.lw-map-node, .lw-faction-node, .lw-person-node')) return;
+    this.resetView(key);
+  }
+
+  /** 记录按在某张图上的指针，用于单指平移与双指缩放。 */
+  trackPointer(event) {
+    const key = this.viewKeyOf(event.target);
+    if (!key) return null;
+    this.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY, key });
+    return key;
+  }
+
+  startPinch(key) {
+    const points = [...this.pointers.values()].filter((pointer) => pointer.key === key);
+    if (points.length < 2) return false;
+    const [a, b] = points;
+    const middle = this.pointInView(key, (a.x + b.x) / 2, (a.y + b.y) / 2);
+    if (!middle) return false;
+    const view = this.viewState(key);
+    this.pinchGesture = {
+      key,
+      startDistance: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+      startScale: view.scale,
+      world: { x: (middle.x - view.x) / view.scale, y: (middle.y - view.y) / view.scale },
+    };
+    this.pointerGesture = null;
+    this.viewCanvas(key)?.classList.add('is-panning');
+    return true;
+  }
+
+  updatePinch() {
+    const gesture = this.pinchGesture;
+    if (!gesture) return false;
+    const points = [...this.pointers.values()].filter((pointer) => pointer.key === gesture.key);
+    if (points.length < 2) return false;
+    const [a, b] = points;
+    const distance = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+    const middle = this.pointInView(gesture.key, (a.x + b.x) / 2, (a.y + b.y) / 2);
+    if (!middle) return false;
+    const scale = Math.min(MAP_MAX_SCALE, Math.max(MAP_MIN_SCALE, gesture.startScale * (distance / gesture.startDistance)));
+    this.viewStates[gesture.key] = {
+      scale,
+      x: middle.x - gesture.world.x * scale,
+      y: middle.y - gesture.world.y * scale,
+    };
+    this.applyViewport(gesture.key);
+    return true;
+  }
+
+  endPinchIfNeeded() {
+    const gesture = this.pinchGesture;
+    if (!gesture) return;
+    const remaining = [...this.pointers.values()].filter((pointer) => pointer.key === gesture.key).length;
+    if (remaining >= 2) return;
+    this.pinchGesture = null;
+    this.viewCanvas(gesture.key)?.classList.remove('is-panning');
   }
 
   handlePointerDown(event) {
-    if (event.button !== 0) return;
-    const canvas = event.target.closest?.('[data-lw-map-canvas]');
-    if (canvas && !event.target.closest('.lw-map-node') && !event.target.closest('button')) {
-      this.pointerGesture = {
-        id: event.pointerId,
-        type: 'pan',
-        startX: event.clientX,
-        startY: event.clientY,
-        originX: this.mapView.x,
-        originY: this.mapView.y,
-        startPoint: this.mapPoint(event.clientX, event.clientY),
-        moved: false,
-      };
-      canvas.classList.add('is-panning');
-      event.target.setPointerCapture?.(event.pointerId);
-      event.preventDefault();
-      return;
+    if (event.button !== 0 && event.pointerType === 'mouse') return;
+    const viewKey = this.trackPointer(event);
+    if (viewKey) {
+      if (this.startPinch(viewKey)) {
+        event.preventDefault();
+        return;
+      }
+      const canvas = this.viewCanvas(viewKey);
+      const onNode = event.target.closest?.('.lw-map-node, .lw-faction-node, .lw-person-node, button');
+      if (canvas && !onNode) {
+        const view = this.viewState(viewKey);
+        this.pointerGesture = {
+          id: event.pointerId,
+          type: 'pan',
+          key: viewKey,
+          startX: event.clientX,
+          startY: event.clientY,
+          originX: view.x,
+          originY: view.y,
+          startPoint: this.pointInView(viewKey, event.clientX, event.clientY),
+          moved: false,
+        };
+        canvas.classList.add('is-panning');
+        event.target.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
+        return;
+      }
     }
     const resize = event.target.closest('[data-lw-resize]');
     const floating = event.target.closest('.lw-floating');
@@ -565,6 +692,14 @@ export class LivingWorldPanel {
   }
 
   handlePointerMove(event) {
+    const tracked = this.pointers.get(event.pointerId);
+    if (tracked) {
+      this.pointers.set(event.pointerId, { ...tracked, x: event.clientX, y: event.clientY });
+      if (this.updatePinch()) {
+        event.preventDefault();
+        return;
+      }
+    }
     const gesture = this.pointerGesture;
     if (!gesture || gesture.id !== event.pointerId) return;
     if (gesture.type === 'pan') {
@@ -572,19 +707,20 @@ export class LivingWorldPanel {
       const dy = event.clientY - gesture.startY;
       if (Math.abs(dx) + Math.abs(dy) > 3) gesture.moved = true;
       if (!gesture.moved) return;
-      const current = this.mapPoint(event.clientX, event.clientY);
+      const current = this.pointInView(gesture.key, event.clientX, event.clientY);
+      const view = this.viewState(gesture.key);
       if (gesture.startPoint && current) {
-        this.mapView = {
-          scale: this.mapView.scale,
+        this.viewStates[gesture.key] = {
+          scale: view.scale,
           x: gesture.originX + (current.x - gesture.startPoint.x),
           y: gesture.originY + (current.y - gesture.startPoint.y),
         };
       } else {
-        const rect = this.mapSvg()?.getBoundingClientRect?.();
+        const rect = this.viewSvg(gesture.key)?.getBoundingClientRect?.();
         const unitsPerPixel = rect?.width ? 1000 / rect.width : 1;
-        this.mapView = { scale: this.mapView.scale, x: gesture.originX + dx * unitsPerPixel, y: gesture.originY + dy * unitsPerPixel };
+        this.viewStates[gesture.key] = { scale: view.scale, x: gesture.originX + dx * unitsPerPixel, y: gesture.originY + dy * unitsPerPixel };
       }
-      this.applyMapViewport();
+      this.applyViewport(gesture.key);
       return;
     }
     const dx = event.clientX - gesture.startX;
@@ -617,11 +753,13 @@ export class LivingWorldPanel {
   }
 
   async handlePointerUp(event) {
+    this.pointers.delete(event.pointerId);
+    this.endPinchIfNeeded();
     const gesture = this.pointerGesture;
     if (!gesture || gesture.id !== event.pointerId) return;
     if (gesture.type === 'pan') {
       this.pointerGesture = null;
-      this.mapCanvas()?.classList.remove('is-panning');
+      this.viewCanvas(gesture.key)?.classList.remove('is-panning');
       return;
     }
     this.pointerGesture = null;
@@ -661,6 +799,7 @@ export class LivingWorldPanel {
     this.root?.removeEventListener('pointercancel', this.handlePointerUp);
     this.root?.removeEventListener('wheel', this.handleWheel);
     this.root?.removeEventListener('dblclick', this.handleDoubleClick);
+    this.root?.removeEventListener('toggle', this.handleFoldToggle, true);
     this.root?.remove();
     this.root = null;
   }
