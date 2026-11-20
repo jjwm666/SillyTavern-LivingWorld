@@ -222,7 +222,7 @@ export class LivingWorldPanel {
     const glass = Math.max(0.15, Math.min(0.95, Number(this.settings.glassOpacity) || 0.55));
     this.root.style.setProperty('--lw-glass-alpha', glass.toFixed(2));
     this.root.style.setProperty('--lw-glass-strong', Math.min(0.96, glass + 0.18).toFixed(2));
-    this.root.style.setProperty('--lw-glass-soft', Math.max(0.12, glass * 0.55).toFixed(2));
+    this.root.style.setProperty('--lw-glass-soft', Math.max(0.2, glass * 0.78).toFixed(2));
     this.root.style.setProperty('--lw-glass-blur', `${Math.round(10 + glass * 26)}px`);
     this.root.classList.toggle('lw-floating-hidden', this.settings.floatingButton === false);
     const dock = this.root.querySelector('.lw-floating-dock');

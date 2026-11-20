@@ -256,7 +256,7 @@ export function renderPeopleGraph(world, focusNpcId = null, search = '', view = 
   const query = String(search || '').trim().toLowerCase();
   const matches = (npc) => !query || `${npc.name}${npc.role}`.toLowerCase().includes(query);
   const center = focusNpcId ? world.npcs.find((npc) => npc.id === focusNpcId && npc.alive) || null : null;
-  const ring = center
+  const linked = center
     ? Object.entries(center.relationships || {})
       .map(([otherId, relation]) => ({ npc: byId(world.npcs, otherId), relation }))
       .filter((item) => item.npc && item.npc.alive && item.npc.id !== center.id && matches(item.npc))
@@ -268,6 +268,16 @@ export function renderPeopleGraph(world, focusNpcId = null, search = '', view = 
       .slice(0, 12)
       .map((item) => item.npc)
     : world.npcs.filter((npc) => npc.alive && npc.core && matches(npc)).slice(0, 24);
+  // 以某人为中心时，若他还没攒够关系，把其余核心人物淡着排在环上，
+  // 免得画布空成一张白纸；淡色节点表示「还没有建立关系」。
+  const linkedIds = new Set(linked.map((npc) => npc.id));
+  const distant = center && linked.length < 12
+    ? world.npcs
+      .filter((npc) => npc.alive && npc.id !== center.id && !linkedIds.has(npc.id) && matches(npc))
+      .slice(0, Math.max(0, 12 - linked.length))
+    : [];
+  const ring = center ? [...linked, ...distant] : linked;
+  const ringWeight = (npc) => (linkedIds.has(npc.id) || !center ? 1 : 0.34);
   if (!center && !ring.length) return `<div class="lw-no-data">没有符合条件的人物。</div>`;
   const cx = 500;
   const cy = 305;
@@ -302,9 +312,10 @@ export function renderPeopleGraph(world, focusNpcId = null, search = '', view = 
   const nodeMarkup = [...nodes.values()].map(({ npc, x, y, r }) => {
     const faction = byId(world.factions, npc.factionId);
     const isCenter = center && npc.id === center.id;
+    const weight = ringWeight(npc);
     const labelY = y + r + 15;
-    return `<g class="lw-person-node${isCenter ? ' is-focus' : ''}" data-lw-action="npc-focus" data-id="${e(npc.id)}" role="button" tabindex="0" aria-label="${e(npc.name)}，点击以他为中心">
-      <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="${e(faction?.color || '#6d8dff')}" fill-opacity="${isCenter ? 0.95 : 0.5}" stroke="${e(faction?.color || '#6d8dff')}" stroke-width="${isCenter ? 2.6 : 1.3}"></circle>
+    return `<g class="lw-person-node${isCenter ? ' is-focus' : ''}${weight < 1 ? ' is-distant' : ''}" data-lw-action="npc-focus" data-id="${e(npc.id)}" role="button" tabindex="0" aria-label="${e(npc.name)}，点击以他为中心">
+      <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" fill="${e(faction?.color || '#6d8dff')}" fill-opacity="${isCenter ? 0.95 : (0.5 * weight).toFixed(2)}" stroke="${e(faction?.color || '#6d8dff')}" stroke-width="${isCenter ? 2.6 : 1.3}" stroke-opacity="${weight < 1 ? 0.45 : 1}"></circle>
       <text x="${x.toFixed(1)}" y="${(y + 4).toFixed(1)}" text-anchor="middle" class="lw-person-node-initial">${e(npc.name.slice(0, 1))}</text>
       <text x="${x.toFixed(1)}" y="${labelY.toFixed(1)}" text-anchor="middle" class="lw-person-node-name">${e(npc.name)}</text>
       ${isCenter ? `<text x="${x.toFixed(1)}" y="${(labelY + 14).toFixed(1)}" text-anchor="middle" class="lw-person-node-role">${e(npc.role)}</text>` : ''}
