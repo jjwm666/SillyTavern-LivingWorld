@@ -50,7 +50,27 @@ function clanDigest(faction) {
   }));
 }
 
-export function buildDirectorBrief(state, conversation = '') {
+/**
+ * 核心层可以很大（上限见 state.js 的 NPC_HARD_LIMIT），但一次推演请求里塞进几百份
+ * 人物简报既昂贵也没必要。这里按「正文提到 → 与玩家同地 → 其余轮转」挑一批，
+ * 未被挑中的人物本轮仍由本地启发式照常生活，只是不由模型提议。
+ */
+function selectBriefNpcs(state, coreNpcs, conversation, limit) {
+  const safeLimit = Math.max(8, Math.min(240, Number(limit) || 48));
+  if (coreNpcs.length <= safeLimit) return coreNpcs;
+  const haystack = String(conversation || '');
+  const noticed = [];
+  const others = [];
+  for (const npc of coreNpcs) {
+    if ((npc.name && haystack.includes(npc.name)) || npc.locationId === state.player?.regionId) noticed.push(npc);
+    else others.push(npc);
+  }
+  const offset = others.length ? ((Number(state.round) || 0) * 7) % others.length : 0;
+  const rotated = others.slice(offset).concat(others.slice(0, offset));
+  return noticed.concat(rotated).slice(0, safeLimit);
+}
+
+export function buildDirectorBrief(state, conversation = '', options = {}) {
   const regions = state.regions.map((region) => ({
     id: region.id,
     name: region.name,
@@ -90,8 +110,8 @@ export function buildDirectorBrief(state, conversation = '') {
       progress: event.progress,
       requiredProgress: event.requiredProgress,
     }));
-  const npcBriefs = state.npcs
-    .filter((npc) => npc.core && npc.alive)
+  const allCoreNpcs = state.npcs.filter((npc) => npc.core && npc.alive);
+  const npcBriefs = selectBriefNpcs(state, allCoreNpcs, conversation, options.briefNpcLimit)
     .map((npc) => {
       const region = byId(state.regions, npc.locationId);
       const nearby = state.npcs
@@ -146,6 +166,7 @@ export function buildDirectorBrief(state, conversation = '') {
     regions,
     factions,
     activeEvents,
+    coreNpcTotal: allCoreNpcs.length,
     npcBriefs,
     allowedNpcActions: NPC_ACTIONS,
     allowedFactionActions: FACTION_ACTIONS,
@@ -166,7 +187,7 @@ const RELATION_DIMENSION_GUIDE = RELATION_DIMENSIONS
   .join('；');
 
 export function buildEvolutionPrompt(state, conversation = '', options = {}) {
-  const brief = buildDirectorBrief(state, conversation);
+  const brief = buildDirectorBrief(state, conversation, options);
   const directive = customDirectives(options, 'evolutionPrompt');
   return [
     '你是这个世界幕后推演的导演。你不写正文，只输出世界接下来一轮发生了什么。',
@@ -199,6 +220,8 @@ export function buildEvolutionPrompt(state, conversation = '', options = {}) {
 }
 
 export function buildBootstrapPrompt(material, options = {}) {
+  // 一次请求里生成的核心人物有限，上限 60；设置更小时按设置来。
+  const coreNpcTarget = Math.max(10, Math.min(60, Number(options.coreNpcLimit) || 10));
   const directive = customDirectives(options, 'bootstrapPrompt');
   return [
     '你是世界构建导演。请根据输入材料构造一个可持续推演的世界骨架，只输出 JSON。',
@@ -217,7 +240,7 @@ export function buildBootstrapPrompt(material, options = {}) {
     '  "player": { "name": "{{user}}", "regionId": "", "wealth": 120 }',
     '}',
     '硬性要求：',
-    '1. 至少 5 个势力、8 个区域、10 个 core NPC，势力之间要有互相矛盾的关系。',
+    `1. 至少 5 个势力、8 个区域、${coreNpcTarget} 个 core NPC，势力之间要有互相矛盾的关系。`,
     '2. 每个势力 2-4 个内部派系，诉求必须互相冲突：有人主战、有人主和、有人只想保本。派系名要从输入材料里长出来（家族、商号、教团、军中营号、地方士绅等），不要直接用"激进派/守旧派"这种通用标签；材料没写到的，按这个世界的语言习惯命名。',
     '3. 势力关系用五个维度表达，允许"利益很高但敌意很高"这类矛盾组合。',
     '4. 区域需要 x/y 坐标用于地图，children 次级区域与父级结构相同，最多三层：第三级即再次级区域。',

@@ -4,6 +4,7 @@ import { createDemoWorld } from '../src/engine/demo-world.js';
 import { buildBootstrapPrompt, buildDirectorBrief, buildEvolutionPrompt, heuristicProposal } from '../src/engine/director.js';
 import { evolveWorld } from '../src/engine/simulation.js';
 import { byId, safeJsonParse } from '../src/engine/utils.js';
+import { normalizeWorld } from '../src/engine/state.js';
 import { buildWorldContext } from '../src/integration/context.js';
 
 test('same seed and intents reproduce the same dice results', () => {
@@ -209,4 +210,25 @@ test('bootstrap prompt requests recursive subregions and player state', () => {
   assert.ok(prompt.includes('再次级区域'));
   assert.ok(prompt.includes('"weather"'));
   assert.ok(prompt.includes('"wealth"'));
+});
+
+test('核心层可以超过百人，推演简报按上限挑选并优先带上玩家同地的人', () => {
+  const demo = createDemoWorld();
+  const playerRegion = demo.player.regionId;
+  const others = demo.regions.filter((region) => region.id !== playerRegion).map((region) => region.id);
+  const npcs = Array.from({ length: 220 }, (_, index) => ({
+    name: `路人${index}`,
+    role: '街坊',
+    core: true,
+    locationId: others[index % others.length],
+  }));
+  npcs.push({ name: '印证者', role: '邻居', core: true, locationId: playerRegion });
+  const world = normalizeWorld({ ...demo, npcs }, { coreNpcLimit: 400 });
+  assert.equal(world.npcs.length, 221);
+  assert.equal(world.npcs.filter((npc) => npc.core).length, 221);
+
+  const brief = buildDirectorBrief(world, '', { briefNpcLimit: 40 });
+  assert.equal(brief.coreNpcTotal, 221);
+  assert.equal(brief.npcBriefs.length, 40);
+  assert.ok(brief.npcBriefs.some((entry) => entry.self.name === '印证者'), '玩家同地的人应优先进入简报');
 });

@@ -49,6 +49,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   injectGuideText: '',
   includeSecrets: false,
   coreNpcLimit: 24,
+  briefNpcLimit: 48,
   backgroundNpcsPerRegion: 120,
   autoBootstrap: true,
   promptPreset: 'balanced',

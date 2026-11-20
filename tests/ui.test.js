@@ -139,3 +139,20 @@ test('折叠区块的展开状态可跨重绘保留（key 唯一且稳定）', (
   assert.deepEqual(keysOf(first), keysOf(second));
   assert.equal(new Set(keysOf(first)).size, keysOf(first).length);
 });
+
+test('规模设置放开核心 NPC 数量，并单独控制每轮简报人数', () => {
+  const world = createDemoWorld();
+  const html = renderSettings({ ...DEFAULT_SETTINGS, customPromptPresets: [] }, { message: '' }, world);
+  assert.ok(html.includes('name="coreNpcLimit" min="1" max="400"'));
+  assert.ok(html.includes('name="briefNpcLimit" min="8" max="240"'));
+  assert.ok(html.includes('每轮简报人数'));
+});
+
+test('悬浮球改为白色主题球，图标与手柄随尺寸等比缩放', async () => {
+  const fs = await import('node:fs/promises');
+  const css = await fs.readFile(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(css.includes('--lw-float-bg: #ffffff'), '悬浮球底色应是白色');
+  assert.ok(css.includes('.lw-floating > svg { width: 42%; height: 42%; }'), '图标应随球体等比缩放');
+  assert.ok(css.includes('.lw-floating-resize { width: 28%; height: 28%;'), '缩放手柄应随球体等比缩放');
+  assert.ok(css.includes('.lw-floating-orbit { inset: -10%; }'), '光环应随球体等比缩放');
+});

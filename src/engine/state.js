@@ -284,6 +284,9 @@ const KNOWN_KEYS = new Set([
   'dice', 'lastEvolution', 'chronicle', 'evolutionCount', 'festivals',
 ]);
 
+/** 存档允许保留的人物总数上限。核心层数量由设置决定，这里只兜底防止存档失控。 */
+export const NPC_HARD_LIMIT = 400;
+
 export function normalizeWorld(input = {}, options = {}) {
   const migrated = migrateWorld(input);
   const source = migrated.world && typeof migrated.world === 'object' ? migrated.world : {};
@@ -291,7 +294,7 @@ export function normalizeWorld(input = {}, options = {}) {
   for (const [key, value] of Object.entries(source)) {
     if (!KNOWN_KEYS.has(key)) passthrough[key] = value;
   }
-  const coreLimit = integer(options.coreNpcLimit, 24, 1, 100);
+  const coreLimit = integer(options.coreNpcLimit, 24, 1, NPC_HARD_LIMIT);
   const sourceRegions = asArray(source.regions).length ? source.regions : [{ name: '起始之地', type: '领域' }];
   const regions = sourceRegions.slice(0, 60).map((region, index) => normalizeRegion(region, index, 0));
   connectRegions(regions);
@@ -305,7 +308,7 @@ export function normalizeWorld(input = {}, options = {}) {
   }
   normalizeRelations(factions);
   const sourceNpcs = asArray(source.npcs).length ? source.npcs : [{ name: '无名旅人', role: '观察者', core: true }];
-  const npcs = sourceNpcs.slice(0, 100).map((npc, index) => normalizeNpc(npc, index, regionIds, factionIds, coreLimit));
+  const npcs = sourceNpcs.slice(0, NPC_HARD_LIMIT).map((npc, index) => normalizeNpc(npc, index, regionIds, factionIds, coreLimit));
   const npcIds = npcs.map((npc) => npc.id);
   for (const faction of factions) {
     if (!npcIds.includes(faction.leaderNpcId)) faction.leaderNpcId = npcs.find((npc) => npc.factionId === faction.id)?.id || null;

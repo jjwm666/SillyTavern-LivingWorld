@@ -36,30 +36,40 @@
 
 .lw-floating-dock { position: fixed; z-index: 9998; right: 25px; bottom: 25px; width: 58px; height: 58px; transition: opacity .2s; }
 .lw-floating {
+  --lw-float-bg: #ffffff;
+  --lw-float-bg-2: #eef4f0;
+  --lw-float-glyph: #2f8f7c;
+  --lw-float-ring: rgba(47, 143, 124, .34);
   position: relative;
   width: 100%;
   height: 100%;
   padding: 0;
-  border: 1px solid rgba(103, 216, 193, .5);
+  border: 1px solid var(--lw-float-ring);
   border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #214b40, #0b1d18 70%);
-  color: #67d8c1;
+  background: radial-gradient(circle at 35% 28%, var(--lw-float-bg), var(--lw-float-bg-2) 78%);
+  color: var(--lw-float-glyph);
   display: grid;
   place-items: center;
   cursor: grab;
   touch-action: none;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, .45), inset 0 0 18px rgba(103, 216, 193, .1);
-  transition: transform .25s ease, box-shadow .25s ease;
+  box-shadow: 0 10px 30px rgba(9, 26, 22, .22), inset 0 1px 0 rgba(255, 255, 255, .9);
+  transition: transform .25s ease, box-shadow .25s ease, width .18s ease, height .18s ease;
 }
 .lw-floating:active { cursor: grabbing; }
-.lw-floating:hover { transform: translateY(-3px) rotate(8deg); box-shadow: 0 16px 48px rgba(0, 0, 0, .55), 0 0 24px rgba(103, 216, 193, .15); }
-.lw-floating-orbit { position: absolute; inset: -6px; border: 1px solid rgba(103, 216, 193, .22); border-radius: 50%; border-left-color: transparent; animation: lw-spin 12s linear infinite; pointer-events: none; }
+.lw-floating:hover { transform: translateY(-3px) rotate(8deg); box-shadow: 0 16px 40px rgba(9, 26, 22, .28), 0 0 20px rgba(47, 143, 124, .22); }
+.lw-floating-orbit { position: absolute; border: 1px solid var(--lw-float-ring); border-radius: 50%; border-left-color: transparent; animation: lw-spin 12s linear infinite; pointer-events: none; }
 .lw-floating-orbit::after { content: ""; position: absolute; width: 5px; height: 5px; border-radius: 50%; background: var(--lw-amber); top: 5px; left: 7px; box-shadow: 0 0 10px var(--lw-amber); }
-.lw-floating-status { position: absolute; right: 1px; bottom: 3px; width: 10px; height: 10px; border: 2px solid #0b1d18; border-radius: 50%; background: #67d8c1; pointer-events: none; }
+.lw-floating-status { position: absolute; right: 3%; bottom: 5%; border: 2px solid #ffffff; border-radius: 50%; background: #3ec9a7; pointer-events: none; }
 .lw-floating.running .lw-floating-status { background: var(--lw-amber); animation: lw-pulse 1s ease infinite; }
 .lw-floating-hide { position: absolute; top: -9px; right: -7px; z-index: 3; width: 20px; height: 20px; padding: 0; border: 1px solid var(--lw-line-strong); border-radius: 50%; background: var(--lw-surface-2); color: var(--lw-muted); cursor: pointer; opacity: 0; transition: opacity .2s; }
 .lw-floating-dock:hover .lw-floating-hide, .lw-floating-hide:focus-visible { opacity: 1; }
 .lw-floating-resize { position: absolute; right: -3px; bottom: -3px; z-index: 2; width: 17px; height: 17px; cursor: nwse-resize; touch-action: none; border-right: 2px solid var(--lw-teal); border-bottom: 2px solid var(--lw-teal); border-radius: 2px; opacity: .7; }
+/* 图标、光环、状态点与手柄随悬浮球尺寸等比缩放 */
+.lw-floating > svg { width: 42%; height: 42%; }
+.lw-floating-orbit { inset: -10%; }
+.lw-floating-status { width: 17%; height: 17%; min-width: 7px; min-height: 7px; border-width: 2px; }
+.lw-floating-hide { top: -10%; right: -10%; width: 34%; height: 34%; min-width: 17px; min-height: 17px; font-size: 12px; }
+.lw-floating-resize { width: 28%; height: 28%; min-width: 13px; min-height: 13px; }
 .lw-floating-hidden .lw-floating-dock, .lw-open .lw-floating-dock { opacity: 0; pointer-events: none; }
 
 .lw-backdrop { position: fixed; inset: 0; z-index: 9998; background: rgba(1, 7, 6, .72); backdrop-filter: blur(8px); opacity: 0; pointer-events: none; transition: opacity .3s ease; }
@@ -814,3 +824,11 @@
 #living-world-root[data-theme="light"] .lw-fold.lw-settings-section > summary { background: #eef2ea; }
 .lw-fold.lw-settings-section > summary { justify-content: flex-start; gap: 8px; }
 .lw-fold.lw-settings-section > summary h3 { flex: 1 1 auto; }
+
+/* 悬浮球在浅色主题下用更实的描边，避免白球贴白底 */
+#living-world-root[data-theme="light"] .lw-floating {
+  --lw-float-bg-2: #eef2ee;
+  --lw-float-ring: rgba(47, 143, 124, .45);
+  box-shadow: 0 8px 24px rgba(31, 61, 54, .18), inset 0 1px 0 #ffffff;
+}
+#living-world-root[data-theme="light"] .lw-floating-status { border-color: #ffffff; }
