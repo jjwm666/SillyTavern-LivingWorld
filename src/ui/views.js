@@ -74,110 +74,187 @@ function mulberry32(seed) {
  * 运河与桥梁、街区肌理。同一个区域每次渲染都得到同一张图（按 id 播种），
  * 层级越深街区越细，视觉上像一张真正的城市测绘稿。
  */
-function cityFabric(seedText, depth = 0) {
-  const rng = mulberry32(hashNumber(`atlas:${seedText}`));
-  const width = 1000;
-  const height = 560;
-  const detail = Math.min(3, Math.max(0, Number(depth) || 0));
+/* ───────── 极简单色制图：一张图，直接由世界数据画出来 ───────── */
+
+function polygonHits(x, y, points) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const [xi, yi] = points[i];
+    const [xj, yj] = points[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function smoothPath(points, closed = true) {
+  if (points.length < 3) return '';
+  const list = closed ? [...points, points[0], points[1]] : points;
+  let d = `M ${list[0][0].toFixed(1)} ${list[0][1].toFixed(1)}`;
+  for (let index = 1; index < list.length - 1; index += 1) {
+    const [x0, y0] = list[index];
+    const [x1, y1] = list[index + 1];
+    d += ` Q ${x0.toFixed(1)} ${y0.toFixed(1)} ${((x0 + x1) / 2).toFixed(1)} ${((y0 + y1) / 2).toFixed(1)}`;
+  }
+  return closed ? `${d} Z` : d;
+}
+
+/** 地区轮廓：人口越多的城占的地越宽，形状按 id 播种，同一世界每次一致。 */
+function districtPoints(region) {
+  const rng = mulberry32(hashNumber(`district:${region.id}`));
+  const population = Math.max(400, Number(region.population) || 2000);
+  const size = 74 + Math.min(46, Math.log10(population) * 7.5);
+  const rotation = rng() * Math.PI * 2;
+  const steps = 11;
+  const points = [];
+  for (let index = 0; index < steps; index += 1) {
+    const angle = rotation + (index / steps) * Math.PI * 2 + (rng() - 0.5) * 0.12;
+    const radius = size * (0.58 + rng() * 0.46);
+    points.push([region.x + Math.cos(angle) * radius * 1.2, region.y + Math.sin(angle) * radius * 0.92]);
+  }
+  return points;
+}
+
+function districtGeometry(region) {
+  return smoothPath(districtPoints(region), true);
+}
+
+/**
+ * 水系：河流从地图上缘流下来，逐层挑「离所有城区最远」的横坐标，
+ * 于是水会自然地从城区之间穿过；海与湖的位置也由世界种子决定。
+ */
+function atlasWater(regions, rng) {
+  const centers = regions.map((region) => ({ x: region.x, y: region.y }));
+  let previous = 480 + (rng() - 0.5) * 200;
+  const spine = [-40, 60, 165, 270, 375, 480, 600].map((y) => {
+    let bestX = previous;
+    let bestScore = -Infinity;
+    for (let x = 60; x <= 940; x += 20) {
+      let nearest = Infinity;
+      for (const center of centers) nearest = Math.min(nearest, Math.hypot(center.x - x, center.y - y));
+      const score = nearest - Math.abs(x - previous) * 0.5 - rng() * 8;
+      if (score > bestScore) { bestScore = score; bestX = x; }
+    }
+    previous = bestX;
+    return [bestX + (rng() - 0.5) * 14, y];
+  });
+
+  const edgeCost = { r: 0, br: 0, bl: 0 };
+  for (const center of centers) {
+    if (center.x > 780 || (center.x > 700 && center.y < 220)) edgeCost.r += 1;
+    if (center.x > 620 && center.y > 400) edgeCost.br += 1;
+    if (center.x < 380 && center.y > 400) edgeCost.bl += 1;
+  }
+  const side = Object.keys(edgeCost).sort((a, b) => edgeCost[a] - edgeCost[b])[0];
+  const rightEdge = Math.max(700, Math.min(930, Math.max(...centers.map((center) => center.x)) + 70));
+  let sea = '';
+  let coast = '';
+  if (side === 'r') {
+    const a = [rightEdge, -40];
+    const b = [rightEdge - 46 - rng() * 30, 190];
+    const c = [rightEdge - 10 - rng() * 20, 380];
+    const d = [rightEdge - 56 - rng() * 30, 600];
+    coast = `M ${a[0].toFixed(0)} ${a[1].toFixed(0)} C ${(a[0] - 74).toFixed(0)} 120, ${(b[0] + 54).toFixed(0)} 140, ${b[0].toFixed(0)} 258 C ${(b[0] - 54).toFixed(0)} 356, ${(c[0] - 44).toFixed(0)} 468, ${c[0].toFixed(0)} 600`;
+    sea = `${coast} L 1040 600 L 1040 -40 Z`;
+  } else if (side === 'br') {
+    const a = [610 + rng() * 80, 640];
+    const b = [790 + rng() * 40, 540];
+    const d = [1040, 430 + rng() * 60];
+    coast = `M ${a[0].toFixed(0)} ${a[1].toFixed(0)} C ${(a[0] + 90).toFixed(0)} 590, ${(b[0] - 40).toFixed(0)} 520, ${b[0].toFixed(0)} ${(b[1] - 10).toFixed(0)} S ${(d[0] - 60).toFixed(0)} ${(d[1] + 20).toFixed(0)}, ${d[0]} ${d[1].toFixed(0)}`;
+    sea = `${coast} L 1040 640 L ${a[0].toFixed(0)} 640 Z`;
+  } else {
+    const a = [390 + rng() * 90, 640];
+    const b = [230 + rng() * 40, 545];
+    const d = [-40, 440 + rng() * 60];
+    coast = `M ${a[0].toFixed(0)} ${a[1].toFixed(0)} C ${(a[0] - 90).toFixed(0)} 590, ${(b[0] + 40).toFixed(0)} 520, ${b[0].toFixed(0)} ${(b[1] - 10).toFixed(0)} S ${(d[0] + 60).toFixed(0)} ${(d[1] + 20).toFixed(0)}, ${d[0]} ${d[1].toFixed(0)}`;
+    sea = `${coast} L -40 640 L ${a[0].toFixed(0)} 640 Z`;
+  }
+
+  const lakes = [];
+  for (let index = 0; index < 3; index += 1) {
+    let best = null;
+    let bestScore = -Infinity;
+    for (let attempt = 0; attempt < 18; attempt += 1) {
+      const x = 80 + rng() * 840;
+      const y = 70 + rng() * 380;
+      let nearest = Infinity;
+      for (const center of centers) nearest = Math.min(nearest, Math.hypot(center.x - x, center.y - y));
+      const score = nearest + rng() * 30;
+      if (score > bestScore) { bestScore = score; best = { x, y }; }
+    }
+    if (!best) continue;
+    lakes.push(`<ellipse class="lw-atlas-lake" cx="${best.x.toFixed(0)}" cy="${best.y.toFixed(0)}" rx="${(18 + rng() * 26).toFixed(0)}" ry="${(13 + rng() * 18).toFixed(0)}" transform="rotate(${(rng() * 60 - 30).toFixed(0)} ${best.x.toFixed(0)} ${best.y.toFixed(0)})"/>`);
+  }
+
+  const bridgePoints = spine.slice(2, 6).map(([x, y]) => ({ x, y }));
+  return {
+    river: smoothPath(spine, false),
+    sea,
+    coast,
+    lakes: lakes.join(''),
+    bridges: bridgePoints,
+    side,
+  };
+}
+
+/** 整张地图：每个地区的街坊铺在自己轮廓里，道路连通城区，水系从中间穿过。 */
+function atlasLayer(regions, seed, depth = 0) {
+  const rng = mulberry32(hashNumber(`atlas2:${seed}:${depth}`));
   const out = [];
+  const defs = [];
+  const water = atlasWater(regions, rng);
 
-  // 海湾：右下角一片水面，海岸线单独描一遍，像测绘稿上的岸线。
-  const shore = `M ${(700 + rng() * 70).toFixed(0)} ${height + 40} C ${(760 + rng() * 40).toFixed(0)} ${(height - 90).toFixed(0)}, ${(880 + rng() * 30).toFixed(0)} ${(height - 160).toFixed(0)}, ${width + 40} ${(height - 210).toFixed(0)}`;
-  out.push('<g class="lw-atlas-water">');
-  out.push(`<path class="lw-atlas-sea" d="${shore} L ${width + 40} ${height + 40} Z"/>`);
-  out.push(`<path class="lw-atlas-coast" d="${shore}"/>`);
-
-  // 主河：一条宽水带横穿城市，两岸各留出一点空隙。
-  const riverY = 150 + rng() * 130;
-  const sway = 30 + rng() * 44;
-  const river = `M -80 ${riverY.toFixed(0)} C 180 ${(riverY - sway).toFixed(0)}, 330 ${(riverY + sway).toFixed(0)}, 520 ${(riverY + sway * 0.2).toFixed(0)} S 760 ${(riverY + sway).toFixed(0)}, 1060 ${(riverY + sway * 0.5).toFixed(0)}`;
-  out.push(`<path class="lw-atlas-river" d="${river}"/>`);
-  out.push(`<path class="lw-atlas-bank" d="${river}"/>`);
-  out.push('</g>');
-
-  // 密排地块：像测绘图上的街坊，彼此只隔一条街。
-  const cols = 40 + detail * 4;
-  const rows = 26 + detail * 4;
-  const cellW = width / cols;
-  const cellH = height / rows;
-  const blocks = [];
-  for (let row = 0; row < rows; row += 1) {
-    for (let col = 0; col < cols; col += 1) {
-      const cx = (col + 0.5) * cellW;
-      const cy = (row + 0.5) * cellH;
-      if (cy > riverY - 19 && cy < riverY + 36) continue;
-      if (cx > 740 && cy > height - 128) continue;
-      if (rng() < 0.08) continue;
-      // 偶尔把两格并成一个院落，避免整片街区像棋盘。
-      const wide = rng() < 0.22 ? 1.9 : 1;
-      const tall = !wide && rng() < 0.18 ? 1.8 : 1;
-      const bw = cellW * wide * (0.82 + rng() * 0.14) - 1.1;
-      const bh = cellH * tall * (0.78 + rng() * 0.16) - 1.1;
-      const x = cx - bw / 2 + (rng() - 0.5) * 0.8;
-      const y = cy - bh / 2 + (rng() - 0.5) * 0.8;
-      blocks.push(`<rect class="lw-atlas-block" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="0.5"/>`);
+  // 道路先铺，街坊再压上去：只在街区缝隙里露出，像真正的城市路网
+  const seen = new Set();
+  const roads = [];
+  for (const region of regions) {
+    for (const edge of region.neighbors || []) {
+      const target = regions.find((item) => item.id === edge.targetId);
+      if (!target) continue;
+      const key = [region.id, target.id].sort().join(':');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const d = roadPath(region, target, key);
+      roads.push(`<path class="lw-atlas-road-case" d="${d}"/><path class="lw-atlas-road-line" d="${d}"/>`);
     }
   }
-  out.push(`<g class="lw-atlas-blocks">${blocks.join('')}</g>`);
-
-  // 巷弄：几道比主街更细的纸色缝，切碎整片街区。
-  const alleys = [];
-  for (let index = 0; index < 22; index += 1) {
-    const y = 40 + rng() * (height - 80);
-    if (Math.abs(y - riverY) < 40) continue;
-    alleys.push(`<line class="lw-atlas-alley" x1="${(rng() * 120).toFixed(0)}" y1="${y.toFixed(1)}" x2="${(760 + rng() * 220).toFixed(0)}" y2="${(y + (rng() - 0.5) * 26).toFixed(1)}"/>`);
-  }
-  for (let index = 0; index < 14; index += 1) {
-    const x = 40 + rng() * (width - 120);
-    alleys.push(`<line class="lw-atlas-alley" x1="${x.toFixed(1)}" y1="${(rng() * 100).toFixed(0)}" x2="${(x + (rng() - 0.5) * 30).toFixed(1)}" y2="${(height - 40 - rng() * 100).toFixed(0)}"/>`);
-  }
-
-  // 街道：用纸色在街坊上「切」出来，宽主路 + 细巷，比画黑线更像地图。
-  const roads = [];
-  for (let index = 0; index < 3; index += 1) {
-    const y = 78 + index * 172 + rng() * 18;
-    roads.push(`<path class="lw-atlas-road-main" d="M -40 ${y.toFixed(0)} C 260 ${(y + (rng() - 0.5) * 70).toFixed(0)}, 740 ${(y + (rng() - 0.5) * 70).toFixed(0)}, 1040 ${(y + (rng() - 0.5) * 40).toFixed(0)}"/>`);
-  }
-  for (let index = 0; index < 4; index += 1) {
-    const x = 118 + index * 212 + rng() * 24;
-    roads.push(`<path class="lw-atlas-road-main" d="M ${x.toFixed(0)} -40 C ${(x + (rng() - 0.5) * 64).toFixed(0)} 180, ${(x + (rng() - 0.5) * 64).toFixed(0)} 400, ${(x + (rng() - 0.5) * 36).toFixed(0)} 620"/>`);
-  }
-  roads.push(`<ellipse class="lw-atlas-ring" cx="${(500 + rng() * 40).toFixed(0)}" cy="${(286 + rng() * 20).toFixed(0)}" rx="${(214 + rng() * 36).toFixed(0)}" ry="${(132 + rng() * 22).toFixed(0)}" transform="rotate(-6 510 292)"/>`);
   out.push(`<g class="lw-atlas-roads">${roads.join('')}</g>`);
-  out.push(`<g class="lw-atlas-alleys">${alleys.join('')}</g>`);
 
-  // 次级街道：网格缝里的细线，让肌理更像城市而不是方块阵列。
-  const lanes = [];
-  for (let row = 1; row < rows; row += 1) {
-    const y = row * cellH;
-    lanes.push(`<line class="lw-atlas-lane" x1="-20" y1="${y.toFixed(1)}" x2="${width + 20}" y2="${(y + (rng() - 0.5) * 3).toFixed(1)}"/>`);
+  for (const region of regions) {
+    const points = districtPoints(region);
+    const clipId = `lw-atlas-clip-${String(region.id).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    defs.push(`<clipPath id="${clipId}"><path d="${smoothPath(points, true)}"/></clipPath>`);
+    const population = Math.max(400, Number(region.population) || 2000);
+    const step = Math.max(8, (population > 16000 ? 10 : population > 6000 ? 12 : population > 2500 ? 14 : 17) - depth * 2);
+    const xs = points.map((point) => point[0]);
+    const ys = points.map((point) => point[1]);
+    const minX = Math.min(...xs) - step;
+    const maxX = Math.max(...xs) + step;
+    const minY = Math.min(...ys) - step;
+    const maxY = Math.max(...ys) + step;
+    const blocks = [];
+    for (let y = minY; y < maxY; y += step) {
+      for (let x = minX; x < maxX; x += step) {
+        if (!polygonHits(x + step / 2, y + step / 2, points)) continue;
+        if (rng() < 0.09) continue;
+        const inset = step * (0.08 + rng() * 0.1);
+        const wide = rng() < 0.18 ? 1.8 : 1;
+        const width = step * wide - inset * 2;
+        const height = step - inset * 2;
+        blocks.push(`<rect class="lw-atlas-block" x="${(x + inset).toFixed(1)}" y="${(y + inset).toFixed(1)}" width="${width.toFixed(1)}" height="${height.toFixed(1)}" rx="0.4"/>`);
+      }
+    }
+    const tilt = (rng() - 0.5) * 26;
+    out.push(`<g clip-path="url(#${clipId})"><g class="lw-atlas-blocks" transform="rotate(${tilt.toFixed(1)} ${region.x} ${region.y})">${blocks.join('')}</g></g>`);
   }
-  for (let col = 1; col < cols; col += 1) {
-    const x = col * cellW;
-    lanes.push(`<line class="lw-atlas-lane" x1="${x.toFixed(1)}" y1="-20" x2="${(x + (rng() - 0.5) * 3).toFixed(1)}" y2="${height + 20}"/>`);
-  }
-  out.push(`<g class="lw-atlas-lanes">${lanes.join('')}</g>`);
 
-  // 公园与绿地：几块淡绿圆角面，打散灰色街区。
-  const parks = [];
-  for (let index = 0; index < 5; index += 1) {
-    const px = 60 + rng() * 760;
-    const py = 70 + rng() * 380;
-    if (Math.abs(py - riverY) < 58) continue;
-    if (px > 740 && py > height - 140) continue;
-    parks.push(`<rect class="lw-atlas-park" x="${px.toFixed(0)}" y="${py.toFixed(0)}" width="${(46 + rng() * 72).toFixed(0)}" height="${(30 + rng() * 46).toFixed(0)}" rx="10"/>`);
-  }
-  out.push(`<g class="lw-atlas-parks">${parks.join('')}</g>`);
+  out.push(`<g class="lw-atlas-water"><path class="lw-atlas-sea" d="${water.sea}"/><path class="lw-atlas-coast" d="${water.coast}"/>${water.lakes}</g>`);
 
-  // 桥：跨主河的粗短线，与纵向大道对齐。
-  const bridges = [];
-  for (let index = 0; index < 5; index += 1) {
-    const x = 150 + index * 176 + rng() * 18;
-    bridges.push(`<line class="lw-atlas-bridge" x1="${x.toFixed(0)}" y1="${(riverY - 12).toFixed(0)}" x2="${(x + 7).toFixed(0)}" y2="${(riverY + 22).toFixed(0)}"/>`);
-  }
-  out.push(`<g class="lw-atlas-bridges">${bridges.join('')}</g>`);
+  out.push(`<g class="lw-atlas-river-group"><path class="lw-atlas-river" d="${water.river}"/><path class="lw-atlas-bank" d="${water.river}"/></g>`);
 
-  return `<g class="lw-atlas-fabric" aria-hidden="true">${out.join('')}</g>`;
+  const bridges = water.bridges.map((point) => `<line class="lw-atlas-bridge" x1="${(point.x - 12).toFixed(0)}" y1="${(point.y - 2).toFixed(0)}" x2="${(point.x + 12).toFixed(0)}" y2="${(point.y + 4).toFixed(0)}"/>`).join('');
+  out.push(`<g class="lw-atlas-bridges">${bridges}</g>`);
+
+  return { defs: defs.join(''), body: `<g class="lw-atlas-fabric" aria-hidden="true">${out.join('')}</g>` };
 }
 
 /** 图注：叠在整张图最上层，避免被区域色块盖住。 */
@@ -187,36 +264,6 @@ function cityCaption(label) {
   return `<g class="lw-atlas-caption"><rect class="lw-atlas-caption-plate" x="30" y="470" width="286" height="72" rx="4"/><text class="lw-atlas-title" x="44" y="506">${escapeHtml(title)}</text><text class="lw-atlas-subtitle" x="46" y="528">LIVING WORLD · CITY ATLAS</text><line class="lw-atlas-scale" x1="46" y1="542" x2="106" y2="542"/><text class="lw-atlas-scale-label" x="112" y="546">0 — 2 KM</text></g>`;
 }
 
-/**
- * 极简制图下的区域轮廓：按 id 播种的柔和多边形。
- * 真实地图上不会用圆点代表一座城，所以这里给每个区域一块地，
- * 面积随背景人口变化，季节与势力色只做极淡的染色。
- */
-function districtGeometry(region) {
-  const rng = mulberry32(hashNumber(`district:${region.id}`));
-  const population = Math.max(500, Number(region.population) || 2000);
-  const size = 36 + Math.min(28, Math.log10(population) * 4.8);
-  const rotation = rng() * Math.PI * 2;
-  const steps = 14;
-  const points = [];
-  for (let index = 0; index < steps; index += 1) {
-    const angle = rotation + (index / steps) * Math.PI * 2;
-    const radius = size * (0.7 + rng() * 0.5);
-    points.push([region.x + Math.cos(angle) * radius * 1.18, region.y + Math.sin(angle) * radius * 0.86]);
-  }
-  const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-  const first = mid(points[points.length - 1], points[0]);
-  let d = `M${first[0].toFixed(1)} ${first[1].toFixed(1)}`;
-  for (let index = 0; index < points.length; index += 1) {
-    const point = points[index];
-    const next = points[(index + 1) % points.length];
-    const center = mid(point, next);
-    d += ` Q${point[0].toFixed(1)} ${point[1].toFixed(1)} ${center[0].toFixed(1)} ${center[1].toFixed(1)}`;
-  }
-  return `${d} Z`;
-}
-
-/** 两点之间的道路带一点弧度，像真正的街道而不是几何直线。 */
 function roadPath(from, to, seed) {
   const rng = mulberry32(hashNumber(`road:${seed}`));
   const dx = to.x - from.x;
@@ -528,14 +575,15 @@ export function renderMap(world, selectedRegionId, view = {}, scope = {}, styleM
       ${childCount ? `<text class="lw-map-node-children" x="${region.x + 24}" y="${region.y - 20}" text-anchor="middle">+${childCount}</text>` : ''}
     </g>`;
   }).join('');
+  const fabric = atlas ? atlasLayer(regions, parent?.id || scope.seed || 'world', path.length) : null;
   const styleButton = `<button class="lw-map-style-button" data-lw-action="map-style" title="切换地图绘制风格">${icon('map', 13)}${atlas ? '极简制图' : '深色星图'}</button>`;
   const breadcrumbs = `<nav class="lw-map-breadcrumbs" aria-label="地图层级"><button data-lw-action="map-root">世界</button>${path.map((region, index) => `<span>/</span><button data-lw-action="map-path" data-depth="${index}" class="${index === path.length - 1 ? 'current' : ''}">${e(region.name)}</button>`).join('')}${styleButton}</nav>`;
   return `<section class="lw-map-view lw-view-enter">${sectionHeading('GEOGRAPHY IS DESTINY', parent ? `${parent.name} · 次级地图` : '世界地图', zoomBar('map', mapView.scale))}
     ${breadcrumbs}<div class="lw-map-layout"><div class="lw-map-canvas lw-zoomable${atlas ? ' lw-map-atlas' : ''}" data-lw-pan-zoom="map" tabindex="0" role="application" aria-label="可缩放、可拖动的区域地图">
-      <svg viewBox="0 0 1000 560" role="img" aria-label="可点击的多级区域与路线图"><defs><pattern id="lw-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="currentColor" stroke-width=".5"/></pattern></defs>
+      <svg viewBox="0 0 1000 560" role="img" aria-label="可点击的多级区域与路线图"><defs><pattern id="lw-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="currentColor" stroke-width=".5"/></pattern>${fabric ? fabric.defs : ''}</defs>
         <g class="lw-map-viewport" data-lw-viewport transform="${viewportTransform(mapView)}">
           <rect class="lw-map-grid" x="-1200" y="-1200" width="3400" height="3000" fill="${atlas ? 'none' : 'url(#lw-grid)'}"/>
-          ${atlas ? cityFabric(parent?.id || scope.seed || 'world', path.length) : ''}${lines.join('')}${nodes || '<text x="500" y="280" text-anchor="middle" class="lw-map-node-label">当前层级暂无区域</text>'}${atlas ? cityCaption(parent?.name || world.name) : ''}
+          ${atlas ? fabric.body : lines.join('')}${nodes || '<text x="500" y="280" text-anchor="middle" class="lw-map-node-label">当前层级暂无区域</text>'}${atlas ? cityCaption(parent?.name || world.name) : ''}
         </g>
       </svg>
       ${zoomHint()}

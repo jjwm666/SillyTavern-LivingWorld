@@ -198,7 +198,9 @@ test('三张关系图的连线带颜色与粗细，不再是一律细线', () =>
   assert.ok(/stroke-width:(\d+\.)?\d+px/.test(people));
 
   const map = renderMap(world, world.regions[0].id, {}, {});
-  assert.ok(map.includes('lw-atlas-connect'), '地图路线用道路连线');
+  assert.ok(map.includes('lw-atlas-road-line'), '地区之间应当有道路');
+  assert.ok(/lw-atlas-blocks" transform="rotate/.test(map), '街坊整片裁进地区轮廓内并随地区转向');
+  assert.ok(map.includes('lw-atlas-sea') && map.includes('lw-atlas-lake'), '水域直接画在同一张地图里');
   const darkMap = renderMap(world, world.regions[0].id, {}, {}, 'dark');
   assert.ok(/lw-map-route[\s\S]{0,200}style="stroke-width:/.test(darkMap), '深色星图的路线带分级粗细');
 });

@@ -942,10 +942,13 @@
 .lw-atlas-fabric { pointer-events: none; }
 .lw-atlas-sea { fill: #e4ecf0; }
 .lw-atlas-coast { fill: none; stroke: #b9cad4; stroke-width: 1.2; }
-.lw-atlas-river { fill: none; stroke: #dfe9ee; stroke-width: 46; stroke-linecap: round; }
+.lw-atlas-river { fill: none; stroke: #dde8ee; stroke-width: 34; stroke-linecap: round; }
 .lw-atlas-bank { fill: none; stroke: #c4d5de; stroke-width: 1.1; }
 .lw-atlas-canal { fill: none; stroke: #d8e5eb; stroke-width: 5; stroke-linecap: round; }
-.lw-atlas-block { fill: #e8e6db; stroke: #dad7ca; stroke-width: .6; }
+.lw-atlas-block { fill: #e4e2d5; stroke: #d4d1c2; stroke-width: .55; }
+.lw-atlas-lake { fill: #e6eef3; stroke: #bccfd9; stroke-width: .8; }
+.lw-atlas-road-case { fill: none; stroke: #f8f7f2; stroke-width: 9; stroke-linecap: round; }
+.lw-atlas-road-line { fill: none; stroke: #c4c0b1; stroke-width: 1; stroke-linecap: round; }
 .lw-atlas-road-main { fill: none; stroke: #f8f7f2; stroke-width: 9; stroke-linecap: round; }
 .lw-atlas-ring { fill: none; stroke: #f8f7f2; stroke-width: 11; }
 .lw-atlas-road { stroke: #f8f7f2; stroke-width: 2.4; }
@@ -1173,20 +1176,23 @@ input.lw-inline-input { max-width: 10ch; }
 
 /* ── 极简制图：区域是一块块地，不再是圆点 ───────────────── */
 .lw-map-atlas .lw-atlas-district .lw-atlas-shape {
-  fill: color-mix(in srgb, var(--region-color) 5%, #f8f7f2);
-  stroke: #c9d3d9;
-  stroke-width: .7;
+  fill: transparent;
+  stroke: #cbd6dd;
+  stroke-width: .9;
+  stroke-dasharray: 4 4;
   transition: fill .18s ease, stroke .18s ease;
 }
 .lw-map-atlas .lw-atlas-district:hover .lw-atlas-shape {
-  fill: color-mix(in srgb, var(--region-color) 14%, #ffffff);
+  fill: color-mix(in srgb, var(--region-color) 12%, transparent);
   stroke: #9fb0bb;
+  stroke-dasharray: none;
 }
 .lw-map-atlas .lw-atlas-district.active .lw-atlas-shape,
 .lw-map-atlas .lw-atlas-district:focus-visible .lw-atlas-shape {
-  fill: color-mix(in srgb, var(--region-color) 20%, #ffffff);
+  fill: color-mix(in srgb, var(--region-color) 11%, transparent);
   stroke: #6e8291;
   stroke-width: 1.6;
+  stroke-dasharray: none;
 }
 .lw-atlas-pin { fill: color-mix(in srgb, var(--region-color, #65827c) 76%, #24323c); }
 .lw-atlas-name {
