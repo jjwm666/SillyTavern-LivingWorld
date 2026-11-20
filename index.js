@@ -6,7 +6,8 @@ import { applyWorldEdit } from './src/engine/edits.js';
 import { evolveWorld } from './src/engine/simulation.js';
 import { deepClone, downloadJson, hashString, safeJsonParse } from './src/engine/utils.js';
 import { WorldAPI } from './src/integration/api.js';
-import { buildWorldContext, extractRecentConversation, readChat } from './src/integration/context.js';
+import { buildWorldContext, extractRecentConversation, lastChatSource, readChat, rememberChat } from './src/integration/context.js';
+import { compileLoreDigest, createLoreCatalog, dailyPromptOf, festivalPromptOf, loadLoreCatalog } from './src/integration/lore.js';
 import { selectBaseline, selectRollback, WorldStore } from './src/integration/storage.js';
 import { LivingWorldPanel } from './src/ui/panel.js';
 
@@ -47,6 +48,8 @@ class LivingWorldController {
     this.chatToken = 0;
     this.initialized = false;
     this.chatReadWarningShown = false;
+    this.loreCatalog = createLoreCatalog();
+    this.lorePromise = null;
     this.panel = new LivingWorldPanel({
       onInitialize: () => this.initializeWorld(),
       onEvolve: () => this.world ? this.evolve({ manual: true }) : this.initializeWorld(),
@@ -63,6 +66,9 @@ class LivingWorldController {
       onTestApi: () => this.testApi(),
       onCancelEvolution: () => this.cancelEvolution(),
       onFetchModels: (patch) => this.fetchModels(patch),
+      onLoadLore: () => this.loadLore(),
+      onLoreSettingsChange: (patch) => this.updateSettings(patch),
+      onGenerateLorePrompt: (payload) => this.generateLorePrompt(payload),
     });
   }
 
@@ -126,6 +132,8 @@ class LivingWorldController {
     }
     this.panel.setData({ world: this.world, settings: this.getSettings(), status: this.status });
     this.refreshInjection();
+    // 世界书条目是异步的（可能要向后端按名字取），先注入现有内容，读完再补一次。
+    this.loadLore().then(() => this.refreshInjection()).catch(() => {});
     if (world && migration) this.announce(`旧存档已自动迁移到 v${migration.to}，原数据保持不变`, 'info');
   }
 
@@ -189,10 +197,65 @@ class LivingWorldController {
       focusInjection: settings.focusInjection !== false,
       focusNpcLimit: settings.focusNpcLimit,
       focusFactionLimit: settings.focusFactionLimit,
+      loreDigest: this.loreDigest(2600),
+      dailyPrompt: settings.dailyPrompt,
+      festivalPrompt: settings.festivalPrompt,
     }) : '';
     // position 1 = 插在聊天记录中；depth 0 = 紧贴本轮输入，主 API 最不容易忽略。
     // role 0 = system，避免被当成用户发言的一部分。
     context.setExtensionPrompt(PROMPT_KEY, value, 1, depth, false, 0);
+  }
+
+  /** 当前勾选的世界书条目，拼成给世界模型看的摘要。 */
+  loreDigest(maxChars = 6000) {
+    return compileLoreDigest(this.loreCatalog, this.getSettings(), maxChars);
+  }
+
+  /** 读「角色卡书 + 全局书 + 额外添加的书」，读完通知面板刷新条目列表。 */
+  async loadLore() {
+    if (this.lorePromise) return this.lorePromise;
+    const token = this.chatToken;
+    this.lorePromise = (async () => {
+      try {
+        const catalog = await loadLoreCatalog(this.context(), this.getSettings());
+        if (token !== this.chatToken) return this.loreCatalog;
+        this.loreCatalog = catalog;
+        this.panel.setLoreCatalog(catalog);
+        return catalog;
+      } catch (error) {
+        this.panel.notify(`读取世界书失败：${error.message}`, 'error');
+        return this.loreCatalog;
+      } finally {
+        this.lorePromise = null;
+      }
+    })();
+    return this.lorePromise;
+  }
+
+  /** 用接入的 API 生成新的日常 / 节庆提示词，交给面板填进编辑框。 */
+  async generateLorePrompt({ kind = 'daily', instruction = '' } = {}) {
+    const settings = this.getSettings();
+    const base = kind === 'festival' ? festivalPromptOf(settings) : dailyPromptOf(settings);
+    const world = this.world;
+    const brief = world
+      ? [
+        `世界：${world.name}`,
+        `核心设定：${world.premise || ''}`,
+        `基调：${world.tone || ''}`,
+        `区域：${(world.regions || []).slice(0, 10).map((region) => region.name).join('、')}`,
+      ].join('\n')
+      : '';
+    const prompt = [
+      base,
+      brief,
+      instruction ? `额外要求：${instruction}` : '',
+      '输出：可直接使用的提示词正文，不要解释、不要编号标题、不要代码块。',
+    ].filter(Boolean).join('\n\n');
+    const generated = await this.api.completeText(prompt, {
+      systemPrompt: '你是叙事设定编辑，只输出提示词文本。',
+    });
+    if (!generated) throw new Error('接口没有返回内容');
+    return generated.slice(0, 4000);
   }
 
   buildMaterial() {
@@ -209,7 +272,7 @@ class LivingWorldController {
         creatorNotes: data.creator_notes || '',
       },
       group: context.groups?.[context.groupId]?.name || '',
-      worldInfo: worldbookDigest(context),
+      worldInfo: this.loreDigest(6000) || worldbookDigest(context),
       recentConversation: extractRecentConversation(readChat(context), 14, 18000),
     }, null, 2);
   }
@@ -265,18 +328,23 @@ class LivingWorldController {
     }
   }
 
-  async prepareGeneration(_chat, _contextSize, _abort, type) {
+  async prepareGeneration(chat, _contextSize, _abort, type) {
+    // 生成拦截器手里的 chat 是最权威的一份，先留底再读，避免 context.chat 尚为空时误判「没有正文」。
+    rememberChat(chat);
     if (type === 'quiet') return;
     if (this.evolutionPromise) {
       try { await this.evolutionPromise; } catch { /* 状态栏已显示错误 */ }
     }
-    let baseline = selectBaseline(this.store.checkpoints(), readChat(this.context()));
+    const chatMessages = readChat(this.context());
+    let baseline = selectBaseline(this.store.checkpoints(), chatMessages);
     if (!baseline) baseline = this.world;
     // 读不到正文时明确报出来，否则注入会变成一份和故事无关的世界档案。
-    if (this.world && !this.chatReadWarningShown && !readChat(this.context()).length) {
+    if (this.world && !this.chatReadWarningShown && !chatMessages.length) {
       this.chatReadWarningShown = true;
-      this.setStatus('error', '没有读到当前聊天记录，注入将只包含世界设定；请确认酒馆已加载聊天后重新生成');
+      this.setStatus('error', `没有读到当前聊天记录（已尝试 context.chat、生成拦截器、聊天 DOM，最后来源：${lastChatSource()}），注入将只包含世界设定`);
     }
+    // 读到正文后清掉一次性警告，下一次真的读不到时还能再提示。
+    if (chatMessages.length) this.chatReadWarningShown = false;
     this.generationBaseline = {
       chatKey: this.store.chatKey(),
       world: deepClone(baseline),

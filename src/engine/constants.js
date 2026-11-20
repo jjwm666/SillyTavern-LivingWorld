@@ -86,10 +86,35 @@ export const DEFAULT_SETTINGS = Object.freeze({
   dailyActors: 2,
   festivals: true,
   customFestivals: '',
+  // 世界书注入（角色卡绑定 + 全局 + 额外添加），以及条目级选择
+  loreEnabled: true,
+  loreIncludeCard: true,
+  loreIncludeGlobal: true,
+  loreBooks: [],
+  loreSelection: {},
+  // 日常 / 节庆的默认提示词（留空时用内置版本）
+  dailyPrompt: '',
+  festivalPrompt: '',
+  festivalFromWorldbook: true,
 });
 
 // 面板主题：任何来源（设置页、旧存档、被改坏的配置）都先过一遍这里，
 // 以免玻璃主题在保存时被误判成深色。
+// 日常与节庆的默认提示词：可在「日常与节庆」页里直接改，也可以由后台 API 生成新项目。
+export const DEFAULT_DAILY_PROMPT = [
+  '你在写这个世界里普通人的一天，而不是主线剧情。',
+  '从市集、码头、酒馆、工坊、巷口或值夜的更夫里选一个具体场景，写 2-3 个生活片段。',
+  '让物价、天气、劳作、口粮、闲话与小小的算计自然出现，不写宏大冲突。',
+  '人物可以是无名路人，也可以顺手带到已有 NPC 的日常习惯；不推进主线事件，不给任务。',
+].join('\n');
+
+export const DEFAULT_FESTIVAL_PROMPT = [
+  '你在为这个世界设计一个本地节庆，要能落到具体日子与具体过法。',
+  '节庆必须从当地的生产、信仰、权力结构与历史旧事里长出来，不要直接搬现实世界的通用节日。',
+  '写清：名字、月份与日期、为什么在这一天、人们怎么过（供品、游行、禁忌、集市、竞技、祭祀），以及它会让谁得利、谁不安。',
+  '节庆应当能自然嵌进日常叙事，成为背景里的一层生活质感，而不是一段任务说明。',
+].join('\n');
+
 export const THEME_IDS = Object.freeze(['dark', 'light', 'glass']);
 
 export const THEME_LABELS = Object.freeze({

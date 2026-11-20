@@ -1,6 +1,7 @@
 import { ACTION_LABELS, CLAN_DEMANDS, FACTION_TIERS, PROMPT_PRESETS, RELATION_DIMENSIONS, THEME_IDS, THEME_LABELS, normalizeTheme } from '../engine/constants.js';
 import { clanStance, clanStanding, describeRelationTension } from '../engine/factions.js';
 import { byId, escapeHtml, formatNumber, hashNumber, outcomeLabel, relationLabel } from '../engine/utils.js';
+import { dailyPromptOf, festivalPromptOf, isBookInjected, selectedEntryIds } from '../integration/lore.js';
 import { icon } from './icons.js';
 
 const e = escapeHtml;
@@ -78,68 +79,112 @@ function cityFabric(seedText, depth = 0) {
   const width = 1000;
   const height = 560;
   const detail = Math.min(3, Math.max(0, Number(depth) || 0));
-  const lift = 4 - detail;
   const out = [];
 
-  // 水系：一条横贯画面的河，加两条支流运河
-  const riverY = 130 + rng() * (height - 260);
-  const sway = 34 + rng() * 74;
-  const river = `M -100 ${riverY.toFixed(0)} C 210 ${(riverY - sway).toFixed(0)}, 430 ${(riverY + sway).toFixed(0)}, 680 ${(riverY - sway * 0.35).toFixed(0)} S 980 ${(riverY + sway * 0.45).toFixed(0)}, 1120 ${riverY.toFixed(0)}`;
-  out.push(`<path class="lw-atlas-water" d="${river}"/>`);
-  out.push(`<path class="lw-atlas-bank" d="${river}"/>`);
-  const canalX = 180 + rng() * 420;
-  const canal = `M ${canalX.toFixed(0)} -60 L ${(canalX + (rng() - 0.5) * 90).toFixed(0)} ${(riverY - sway * 0.5).toFixed(0)}`;
-  out.push(`<path class="lw-atlas-canal" d="${canal}"/>`);
-  out.push(`<path class="lw-atlas-canal" d="M ${(canalX + 210).toFixed(0)} ${(riverY + sway * 0.6).toFixed(0)} L ${(canalX + 240 + rng() * 60).toFixed(0)} ${height + 60}"/>`);
+  // 海湾：右下角一片水面，海岸线单独描一遍，像测绘稿上的岸线。
+  const shore = `M ${(700 + rng() * 70).toFixed(0)} ${height + 40} C ${(760 + rng() * 40).toFixed(0)} ${(height - 90).toFixed(0)}, ${(880 + rng() * 30).toFixed(0)} ${(height - 160).toFixed(0)}, ${width + 40} ${(height - 210).toFixed(0)}`;
+  out.push('<g class="lw-atlas-water">');
+  out.push(`<path class="lw-atlas-sea" d="${shore} L ${width + 40} ${height + 40} Z"/>`);
+  out.push(`<path class="lw-atlas-coast" d="${shore}"/>`);
 
-  // 街区肌理：先生在网格里排布建块，再压上道路，看起来就是城市纹理
-  const cols = 5 + detail + lift;
-  const rows = 3 + detail + lift;
+  // 主河：一条宽水带横穿城市，两岸各留出一点空隙。
+  const riverY = 150 + rng() * 130;
+  const sway = 30 + rng() * 44;
+  const river = `M -80 ${riverY.toFixed(0)} C 180 ${(riverY - sway).toFixed(0)}, 330 ${(riverY + sway).toFixed(0)}, 520 ${(riverY + sway * 0.2).toFixed(0)} S 760 ${(riverY + sway).toFixed(0)}, 1060 ${(riverY + sway * 0.5).toFixed(0)}`;
+  out.push(`<path class="lw-atlas-river" d="${river}"/>`);
+  out.push(`<path class="lw-atlas-bank" d="${river}"/>`);
+  out.push('</g>');
+
+  // 密排地块：像测绘图上的街坊，彼此只隔一条街。
+  const cols = 40 + detail * 4;
+  const rows = 26 + detail * 4;
   const cellW = width / cols;
   const cellH = height / rows;
+  const blocks = [];
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
-      if (rng() < 0.12) continue;
-      const padX = 6 + rng() * 10;
-      const padY = 5 + rng() * 8;
-      const bw = Math.max(8, cellW - padX * 2 - rng() * 10);
-      const bh = Math.max(6, cellH - padY * 2 - rng() * 8);
-      const x = col * cellW + padX;
-      const y = row * cellH + padY;
-      out.push(`<rect class="lw-atlas-block" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="${(1 + rng() * 2).toFixed(1)}"/>`);
+      const cx = (col + 0.5) * cellW;
+      const cy = (row + 0.5) * cellH;
+      if (cy > riverY - 19 && cy < riverY + 36) continue;
+      if (cx > 740 && cy > height - 128) continue;
+      if (rng() < 0.08) continue;
+      // 偶尔把两格并成一个院落，避免整片街区像棋盘。
+      const wide = rng() < 0.22 ? 1.9 : 1;
+      const tall = !wide && rng() < 0.18 ? 1.8 : 1;
+      const bw = cellW * wide * (0.82 + rng() * 0.14) - 1.1;
+      const bh = cellH * tall * (0.78 + rng() * 0.16) - 1.1;
+      const x = cx - bw / 2 + (rng() - 0.5) * 0.8;
+      const y = cy - bh / 2 + (rng() - 0.5) * 0.8;
+      blocks.push(`<rect class="lw-atlas-block" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="0.5"/>`);
     }
   }
+  out.push(`<g class="lw-atlas-blocks">${blocks.join('')}</g>`);
 
-  // 道路分级：主干道 → 次级街道 → 巷弄，都是细矢量线
+  // 巷弄：几道比主街更细的纸色缝，切碎整片街区。
+  const alleys = [];
+  for (let index = 0; index < 22; index += 1) {
+    const y = 40 + rng() * (height - 80);
+    if (Math.abs(y - riverY) < 40) continue;
+    alleys.push(`<line class="lw-atlas-alley" x1="${(rng() * 120).toFixed(0)}" y1="${y.toFixed(1)}" x2="${(760 + rng() * 220).toFixed(0)}" y2="${(y + (rng() - 0.5) * 26).toFixed(1)}"/>`);
+  }
+  for (let index = 0; index < 14; index += 1) {
+    const x = 40 + rng() * (width - 120);
+    alleys.push(`<line class="lw-atlas-alley" x1="${x.toFixed(1)}" y1="${(rng() * 100).toFixed(0)}" x2="${(x + (rng() - 0.5) * 30).toFixed(1)}" y2="${(height - 40 - rng() * 100).toFixed(0)}"/>`);
+  }
+
+  // 街道：用纸色在街坊上「切」出来，宽主路 + 细巷，比画黑线更像地图。
   const roads = [];
-  for (let index = 1; index < rows; index += 1) {
-    const y = index * cellH;
-    const main = index % 2 === 1;
-    roads.push(`<line class="${main ? 'lw-atlas-road-main' : 'lw-atlas-road'}" x1="-80" y1="${y.toFixed(0)}" x2="${width + 80}" y2="${y.toFixed(0)}"/>`);
+  for (let index = 0; index < 3; index += 1) {
+    const y = 78 + index * 172 + rng() * 18;
+    roads.push(`<path class="lw-atlas-road-main" d="M -40 ${y.toFixed(0)} C 260 ${(y + (rng() - 0.5) * 70).toFixed(0)}, 740 ${(y + (rng() - 0.5) * 70).toFixed(0)}, 1040 ${(y + (rng() - 0.5) * 40).toFixed(0)}"/>`);
   }
-  for (let index = 1; index < cols; index += 1) {
-    const x = index * cellW;
-    const main = index % 2 === 0;
-    roads.push(`<line class="${main ? 'lw-atlas-road-main' : 'lw-atlas-road'}" x1="${x.toFixed(0)}" y1="-80" x2="${x.toFixed(0)}" y2="${height + 80}"/>`);
+  for (let index = 0; index < 4; index += 1) {
+    const x = 118 + index * 212 + rng() * 24;
+    roads.push(`<path class="lw-atlas-road-main" d="M ${x.toFixed(0)} -40 C ${(x + (rng() - 0.5) * 64).toFixed(0)} 180, ${(x + (rng() - 0.5) * 64).toFixed(0)} 400, ${(x + (rng() - 0.5) * 36).toFixed(0)} 620"/>`);
   }
-  const alleys = 6 + detail * 4;
-  for (let index = 0; index < alleys; index += 1) {
-    const x = rng() * width;
-    roads.push(`<line class="lw-atlas-alley" x1="${x.toFixed(0)}" y1="-40" x2="${(x + (rng() - 0.5) * 60).toFixed(0)}" y2="${height + 40}"/>`);
-  }
+  roads.push(`<ellipse class="lw-atlas-ring" cx="${(500 + rng() * 40).toFixed(0)}" cy="${(286 + rng() * 20).toFixed(0)}" rx="${(214 + rng() * 36).toFixed(0)}" ry="${(132 + rng() * 22).toFixed(0)}" transform="rotate(-6 510 292)"/>`);
   out.push(`<g class="lw-atlas-roads">${roads.join('')}</g>`);
+  out.push(`<g class="lw-atlas-alleys">${alleys.join('')}</g>`);
 
-  // 桥：纵向干道跨河的短粗线段
+  // 次级街道：网格缝里的细线，让肌理更像城市而不是方块阵列。
+  const lanes = [];
+  for (let row = 1; row < rows; row += 1) {
+    const y = row * cellH;
+    lanes.push(`<line class="lw-atlas-lane" x1="-20" y1="${y.toFixed(1)}" x2="${width + 20}" y2="${(y + (rng() - 0.5) * 3).toFixed(1)}"/>`);
+  }
+  for (let col = 1; col < cols; col += 1) {
+    const x = col * cellW;
+    lanes.push(`<line class="lw-atlas-lane" x1="${x.toFixed(1)}" y1="-20" x2="${(x + (rng() - 0.5) * 3).toFixed(1)}" y2="${height + 20}"/>`);
+  }
+  out.push(`<g class="lw-atlas-lanes">${lanes.join('')}</g>`);
+
+  // 公园与绿地：几块淡绿圆角面，打散灰色街区。
+  const parks = [];
+  for (let index = 0; index < 5; index += 1) {
+    const px = 60 + rng() * 760;
+    const py = 70 + rng() * 380;
+    if (Math.abs(py - riverY) < 58) continue;
+    if (px > 740 && py > height - 140) continue;
+    parks.push(`<rect class="lw-atlas-park" x="${px.toFixed(0)}" y="${py.toFixed(0)}" width="${(46 + rng() * 72).toFixed(0)}" height="${(30 + rng() * 46).toFixed(0)}" rx="10"/>`);
+  }
+  out.push(`<g class="lw-atlas-parks">${parks.join('')}</g>`);
+
+  // 桥：跨主河的粗短线，与纵向大道对齐。
   const bridges = [];
-  for (let index = 1; index < cols; index += 1) {
-    const x = index * cellW;
-    const around = Math.abs((x - 500) / 500);
-    const crossingY = riverY - sway * 0.4 + around * 20;
-    bridges.push(`<line class="lw-atlas-bridge" x1="${(x - 7).toFixed(0)}" y1="${crossingY.toFixed(0)}" x2="${(x + 7).toFixed(0)}" y2="${crossingY.toFixed(0)}"/>`);
+  for (let index = 0; index < 5; index += 1) {
+    const x = 150 + index * 176 + rng() * 18;
+    bridges.push(`<line class="lw-atlas-bridge" x1="${x.toFixed(0)}" y1="${(riverY - 12).toFixed(0)}" x2="${(x + 7).toFixed(0)}" y2="${(riverY + 22).toFixed(0)}"/>`);
   }
   out.push(`<g class="lw-atlas-bridges">${bridges.join('')}</g>`);
 
   return `<g class="lw-atlas-fabric" aria-hidden="true">${out.join('')}</g>`;
+}
+
+/** 图注：叠在整张图最上层，避免被区域色块盖住。 */
+function cityCaption(label) {
+  const title = String(label || '').slice(0, 16);
+  if (!title) return '';
+  return `<g class="lw-atlas-caption"><rect class="lw-atlas-caption-plate" x="30" y="470" width="286" height="72" rx="4"/><text class="lw-atlas-title" x="44" y="506">${escapeHtml(title)}</text><text class="lw-atlas-subtitle" x="46" y="528">LIVING WORLD · CITY ATLAS</text><line class="lw-atlas-scale" x1="46" y1="542" x2="106" y2="542"/><text class="lw-atlas-scale-label" x="112" y="546">0 — 2 KM</text></g>`;
 }
 
 /**
@@ -150,14 +195,14 @@ function cityFabric(seedText, depth = 0) {
 function districtGeometry(region) {
   const rng = mulberry32(hashNumber(`district:${region.id}`));
   const population = Math.max(500, Number(region.population) || 2000);
-  const size = 40 + Math.min(32, Math.log10(population) * 6.5);
+  const size = 36 + Math.min(28, Math.log10(population) * 4.8);
   const rotation = rng() * Math.PI * 2;
-  const steps = 13;
+  const steps = 14;
   const points = [];
   for (let index = 0; index < steps; index += 1) {
     const angle = rotation + (index / steps) * Math.PI * 2;
-    const radius = size * (0.72 + rng() * 0.46);
-    points.push([region.x + Math.cos(angle) * radius * 1.24, region.y + Math.sin(angle) * radius * 0.84]);
+    const radius = size * (0.7 + rng() * 0.5);
+    points.push([region.x + Math.cos(angle) * radius * 1.18, region.y + Math.sin(angle) * radius * 0.86]);
   }
   const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
   const first = mid(points[points.length - 1], points[0]);
@@ -490,7 +535,7 @@ export function renderMap(world, selectedRegionId, view = {}, scope = {}, styleM
       <svg viewBox="0 0 1000 560" role="img" aria-label="可点击的多级区域与路线图"><defs><pattern id="lw-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="currentColor" stroke-width=".5"/></pattern></defs>
         <g class="lw-map-viewport" data-lw-viewport transform="${viewportTransform(mapView)}">
           <rect class="lw-map-grid" x="-1200" y="-1200" width="3400" height="3000" fill="${atlas ? 'none' : 'url(#lw-grid)'}"/>
-          ${atlas ? cityFabric(parent?.id || scope.seed || 'world', path.length) : ''}${lines.join('')}${nodes || '<text x="500" y="280" text-anchor="middle" class="lw-map-node-label">当前层级暂无区域</text>'}
+          ${atlas ? cityFabric(parent?.id || scope.seed || 'world', path.length) : ''}${lines.join('')}${nodes || '<text x="500" y="280" text-anchor="middle" class="lw-map-node-label">当前层级暂无区域</text>'}${atlas ? cityCaption(parent?.name || world.name) : ''}
         </g>
       </svg>
       ${zoomHint()}
@@ -652,6 +697,127 @@ export function renderDice(world, filter = 'all') {
   return `<section class="lw-view-enter">${sectionHeading('THE MODEL PROPOSES, THE DICE DECIDE', '分类骰点判定档案', `<span class="lw-count-label">本轮 ${currentRound} 次 · 档案内累计 ${counts.all} 次${rerollNote}</span>`)}<div class="lw-dice-filters">${filters.map(([id, label]) => `<button class="${filter === id ? 'active' : ''}" data-lw-action="dice-filter" data-filter="${id}">${label}<span>${counts[id]}</span></button>`).join('')}</div>
     ${fold('判定规则说明', `<div class="lw-dice-explain">${icon('info', 16)}原值、情境修正、用户全局修正、难度与随机序列均独立记录。相同种子、设置和意图可以复现结果。</div>`, { open: false, key: 'dice-explain' })}
     ${fold('判定记录', `<div class="lw-dice-list">${rows || '<div class="lw-no-data">此分类暂时没有判定记录。</div>'}</div>`, { open: true, key: 'dice-list', hint: `${rows.length || 0} 条` })}
+  </section>`;
+}
+
+const LORE_ORIGIN_LABELS = {
+  card: '角色卡绑定',
+  global: '全局世界书',
+  extra: '额外世界书',
+  other: '其他世界书',
+};
+
+function festivalSortKey(festival) {
+  return (Number(festival.month) || 1) * 100 + (Number(festival.day) || 1);
+}
+
+function parseCustomFestivals(raw) {
+  return String(raw || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [name, date, description] = line.split('|').map((part) => (part || '').trim());
+      const match = /(\d{1,2})\s*[-月./]\s*(\d{1,2})/.exec(date || '');
+      return {
+        name: name || line,
+        month: match ? Number(match[1]) : null,
+        day: match ? Number(match[2]) : null,
+        description: description || '',
+        origin: 'custom',
+      };
+    });
+}
+
+/** 「世界书 · 日常与节庆」：条目级世界书注入 + 日常/节庆提示词 + 由接入 API 生成新项目。 */
+export function renderLore(world, settings = {}, catalog = { books: [] }, status = {}) {
+  const books = Array.isArray(catalog.books) ? catalog.books : [];
+  const extraNames = (Array.isArray(settings.loreBooks) ? settings.loreBooks : []).filter((name) => !books.some((book) => book.name === name));
+  const allBooks = [...books, ...extraNames.map((name) => ({ name, origin: 'extra', entries: [] }))];
+  const entryCount = allBooks.reduce((sum, book) => sum + (Array.isArray(book.entries) ? book.entries.length : 0), 0);
+  const injected = allBooks.filter((book) => isBookInjected(book, settings));
+  const dailyLogs = (world?.logs || [])
+    .filter((log) => log.public && (log.type === 'daily' || log.type === 'festival'))
+    .slice(-6)
+    .reverse();
+  const customFestivals = parseCustomFestivals(settings.customFestivals);
+  const worldFestivals = (world?.festivals || []).map((festival) => ({ ...festival, origin: festival.origin || 'local' }));
+  const festivals = [...worldFestivals, ...customFestivals].sort((a, b) => festivalSortKey(a) - festivalSortKey(b));
+
+  const bookCard = (book) => {
+    const on = isBookInjected(book, settings);
+    const picked = selectedEntryIds(settings, book.name);
+    const activeEntries = (book.entries || []).filter((entry) => entry.enabled);
+    const pickedCount = picked === null ? activeEntries.length : activeEntries.filter((entry) => picked.includes(String(entry.uid))).length;
+    const rows = (book.entries || []).map((entry) => {
+      const checked = entry.enabled && (picked === null || picked.includes(String(entry.uid)));
+      const preview = entry.content.length > 96 ? `${entry.content.slice(0, 96)}…` : entry.content;
+      return `<button type="button" class="lw-lore-entry${checked ? ' on' : ''}${entry.enabled ? '' : ' disabled'}" data-lw-action="lore-entry-toggle" data-book="${e(book.name)}" data-uid="${e(entry.uid)}"${entry.enabled ? '' : ' disabled'} aria-pressed="${checked}">
+        <span class="lw-lore-check">${icon('check', 11)}</span>
+        <span class="lw-lore-entry-text"><strong>${e(entry.comment)}</strong><small>${e(preview)}</small></span>
+      </button>`;
+    }).join('') || '<p class="lw-muted">没有读到这本世界书的条目。可以点「重新读取」，或检查书名是否与酒馆里一致。</p>';
+    return `<article class="lw-lore-book${on ? ' on' : ''}">
+      <header>
+        <button type="button" class="lw-lore-book-toggle" data-lw-action="lore-book-toggle" data-book="${e(book.name)}" data-origin="${e(book.origin)}" aria-pressed="${on}" title="点一下切换是否注入这本世界书"><span class="lw-lore-dot"></span><strong>${e(book.name)}</strong></button>
+        <span class="lw-pill">${e(LORE_ORIGIN_LABELS[book.origin] || '世界书')}</span>
+        <small>${activeEntries.length} 条${picked === null ? '' : ` · 选 ${pickedCount}`}</small>
+        <span class="lw-lore-book-actions"><button type="button" data-lw-action="lore-entries-all" data-book="${e(book.name)}" data-value="on">全选</button><button type="button" data-lw-action="lore-entries-all" data-book="${e(book.name)}" data-value="off">全不选</button>${book.origin === 'extra' ? `<button type="button" data-lw-action="lore-remove-book" data-book="${e(book.name)}">移除</button>` : ''}</span>
+      </header>
+      ${fold(`条目 · ${pickedCount}/${activeEntries.length}`, `<div class="lw-lore-entries">${rows}</div>`, { open: on && picked !== null, key: `lore-${book.name}`, hint: on ? '正在注入' : '未注入' })}
+    </article>`;
+  };
+
+  const bookBody = `<div class="lw-lore-status"><span>已注入 <b>${injected.length}</b> 本</span><span>读到 <b>${entryCount}</b> 条</span><button type="button" class="lw-button lw-small" data-lw-action="lore-load">${icon('refresh', 14)}重新读取</button></div>
+    <label class="lw-lore-toggle-row"><input type="checkbox" name="loreEnabled"${settings.loreEnabled !== false ? ' checked' : ''}><span>启用世界书注入</span><small>关闭后仍注入世界状态，但不带世界书条目</small></label>
+    <p class="lw-muted">默认注入角色卡绑定书与全局世界书；其他书点书名即可加入。展开「条目」可以逐条勾选，只注入你选中的部分。</p>
+    <div class="lw-lore-books">${allBooks.map(bookCard).join('') || '<p class="lw-muted">还没有读到世界书。可以在下方手动添加书名，或先确认酒馆里已加载世界书。</p>'}</div>
+    <div class="lw-lore-add"><input id="lw-lore-book-name" type="text" placeholder="世界书名称，例如「雾港设定集」"><button type="button" class="lw-button lw-small" data-lw-action="lore-add-book">${icon('plus', 14)}添加世界书</button></div>`;
+
+  const dailyBody = `<label class="lw-field"><span class="lw-field-label">日常提示词</span><textarea name="dailyPrompt" rows="8" placeholder="留空则使用内置提示词">${e(dailyPromptOf(settings))}</textarea></label>
+    <div class="lw-lore-form-actions"><button type="button" class="lw-button lw-small" data-lw-action="lore-generate-prompt" data-kind="daily">${icon('spark', 14)}用 API 生成一版日常提示词</button></div>
+    <div class="lw-lore-toggle-row"><label><input type="checkbox" name="dailyLife"${settings.dailyLife !== false ? ' checked' : ''}><span>启用日常</span></label><label class="lw-inline-number">每天出场人数 <input type="number" name="dailyActors" min="1" max="6" value="${Math.max(1, Math.min(6, Number(settings.dailyActors) || 2))}"></label></div>
+    <p class="lw-muted">日常记录会作为「节令与日常」注入正文；提示词决定这部分的生活质感。</p>
+    <div class="lw-log-list">${dailyLogs.map((log) => `<div class="lw-log-row"><span class="lw-pill">${log.type === 'festival' ? '节庆' : '日常'}</span><div><strong>${e(log.title)}</strong>${log.detail ? `<small>${e(String(log.detail).slice(0, 110))}</small>` : ''}</div><small>第 ${log.round} 轮</small></div>`).join('') || '<p class="lw-muted">还没有日常记录，推演一轮后会出现。</p>'}</div>`;
+
+  const festivalBody = `<div class="lw-lore-toggle-row"><label><input type="checkbox" name="festivals"${settings.festivals !== false ? ' checked' : ''}><span>启用节庆</span></label><label><input type="checkbox" name="festivalFromWorldbook"${settings.festivalFromWorldbook !== false ? ' checked' : ''}><span>允许世界书里的节庆</span></label></div>
+    <label class="lw-field"><span class="lw-field-label">自定义节庆</span><textarea name="customFestivals" rows="4" placeholder="每行一个：名称|月-日|描述，例如：雾灯节|3-15|入夜后全城点灯，船队鸣笛。">${e(settings.customFestivals || '')}</textarea></label>
+    <label class="lw-field"><span class="lw-field-label">节庆提示词</span><textarea name="festivalPrompt" rows="8" placeholder="留空则使用内置提示词">${e(festivalPromptOf(settings))}</textarea></label>
+    <div class="lw-lore-form-actions"><button type="button" class="lw-button lw-small" data-lw-action="lore-generate-prompt" data-kind="festival">${icon('spark', 14)}用 API 生成一版节庆提示词</button></div>
+    <div class="lw-festival-list">${festivals.map((festival) => {
+      const date = festival.month ? `${festival.month} 月 ${festival.day || 1} 日` : '日期待定';
+      const badge = festival.origin === 'worldbook' ? '世界书' : festival.origin === 'custom' ? '自定义' : '本地';
+      return `<div class="lw-festival-row"><span class="lw-festival-date">${e(date)}</span><div><strong>${e(festival.name)}</strong><span class="lw-pill">${e(badge)}</span>${festival.description ? `<p>${e(String(festival.description).slice(0, 140))}</p>` : ''}</div></div>`;
+    }).join('') || '<p class="lw-muted">当前没有节庆。可以在上面手写，或让世界推演生成。</p>'}</div>`;
+
+  return `<section class="lw-lore-view lw-view-enter">${sectionHeading('WORLD & CALENDAR', '世界书 · 日常与节庆', `<span class="lw-lore-summary">${icon('book', 14)}${injected.length} 本注入 · ${entryCount} 条可读</span>`)}
+    <form id="lw-lore-form" class="lw-lore-form">
+      <div class="lw-lore-grid">
+        <div class="lw-lore-main">
+          ${fold('世界书注入', bookBody, { open: true, key: 'lore-inject', hint: `${allBooks.length} 本 · ${entryCount} 条` })}
+          ${fold('日常', dailyBody, { open: true, key: 'lore-daily', hint: `${dailyLogs.length} 条记录` })}
+          ${fold('节庆', festivalBody, { open: true, key: 'lore-festival', hint: `${festivals.length} 个` })}
+        </div>
+        <aside class="lw-lore-side">
+          <div class="lw-lore-side-card">
+            <span class="lw-kicker">GENERATE</span>
+            <h3>让接入的 API 写新项目</h3>
+            <p>可以指定题材、语气或一个具体场景。生成结果会填进对应提示词，仍需要你确认后保存。</p>
+            <input id="lw-lore-instruction" type="text" placeholder="例如：写一个港口城市的雨季祭">
+            <div class="lw-lore-generate-actions"><button type="button" class="lw-button lw-small" data-lw-action="lore-generate-prompt" data-kind="daily">生成日常提示词</button><button type="button" class="lw-button lw-small" data-lw-action="lore-generate-prompt" data-kind="festival">生成节庆提示词</button></div>
+            <div class="lw-lore-preset"><input id="lw-lore-preset-name" type="text" placeholder="预设名称，例如「雾港雨季」"><button type="button" class="lw-button lw-small" data-lw-action="lore-save-preset">另存为提示词预设</button></div>
+            <button class="lw-button lw-primary lw-large" type="submit">${icon('check', 15)}保存世界书与节庆设置</button>
+            <small>保存后立即重新计算注入内容。${world ? '' : '当前还没有世界，设置会在初始化后生效。'}</small>
+          </div>
+          <div class="lw-lore-side-card">
+            <span class="lw-kicker">HOW IT FLOWS</span>
+            <h3>这些内容怎么进正文</h3>
+            <p>世界书按条目勾选后进入「世界书要点」，日常与节庆进入「节令与日常」与写作要求，由主 API 在正文里自然体现。</p>
+            <p class="lw-muted">上一轮状态：${e(status?.message || '待命')}</p>
+          </div>
+        </aside>
+      </div>
+    </form>
   </section>`;
 }
 

@@ -15,20 +15,93 @@ const DEFAULT_GUIDE = [
   '节令与日常是生活质感，不是任务清单：让它们出现在对话的空隙、街上的气味与旁人的闲谈里，而不是单独列出来。',
 ];
 
+// 生成拦截器拿到的聊天记录是当前最权威的一份，先留底，
+// 这样即使扩展被调用时 context.chat 还是空的，后续读正文也不会落空。
+let chatSnapshot = [];
+let chatSource = 'none';
+
+function normalizeChat(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === 'object' && Array.isArray(value.messages)) return value.messages;
+  return null;
+}
+
+/** 记录一份聊天快照（生成拦截器 / 消息事件里拿到的数组）。 */
+export function rememberChat(value) {
+  const list = normalizeChat(value);
+  if (list && list.length) chatSnapshot = list;
+  return list || [];
+}
+
+export function forgetChat() {
+  chatSnapshot = [];
+  chatSource = 'none';
+}
+
+export function chatSnapshotSize() {
+  return chatSnapshot.length;
+}
+
+export function lastChatSource() {
+  return chatSource;
+}
+
+// 最后兜底：直接读页面上的聊天 DOM。只有所有接口都拿不到时才走这里。
+function readDomChat() {
+  if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return [];
+  let nodes = [];
+  try {
+    nodes = Array.from(document.querySelectorAll('#chat .mes'));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const node of nodes) {
+    let text = '';
+    try {
+      text = (node.querySelector('.mes_text')?.textContent || '').replace(/\s+/g, ' ').trim();
+    } catch {
+      text = '';
+    }
+    if (!text) continue;
+    out.push({
+      is_user: node.getAttribute('data-is-user') === 'true' || node.classList.contains('user'),
+      is_system: node.getAttribute('data-is-system') === 'true',
+      name: (node.querySelector('.name_text')?.textContent || '').trim(),
+      mes: text,
+    });
+  }
+  return out;
+}
+
 /**
  * 取当前聊天的消息数组。不同酒馆版本把记录放在不同位置
- * （context.chat / context.chatMessages / 全局 SillyTavern.chat），
- * 这里统一成一份数组，读不到才退回空数组，避免整条链路以为「没有正文」。
+ * （context.chat / context.chatMessages / context.chat_history /
+ * context.getChat() / 全局 SillyTavern.chat / 生成拦截器快照），
+ * 这里统一成一份数组；接口全空时再退回 DOM 抓取，避免整条链路以为「没有正文」。
  */
 export function readChat(context) {
-  const sources = [context?.chat, context?.chatMessages, context?.chat_history, globalThis.SillyTavern?.chat];
+  const dynamic = typeof context?.getChat === 'function' ? context.getChat() : null;
+  const sources = [
+    context?.chat,
+    chatSnapshot,
+    dynamic,
+    context?.chatMessages,
+    context?.chat_history,
+    context?.messages,
+    globalThis.SillyTavern?.chat,
+    globalThis.chat,
+  ];
   for (const source of sources) {
-    if (Array.isArray(source) && source.length) return source;
+    const list = normalizeChat(source);
+    if (list && list.length) {
+      chatSource = 'context';
+      return list;
+    }
   }
-  for (const source of sources) {
-    if (source && typeof source === 'object' && Array.isArray(source.messages)) return source.messages;
-  }
-  return [];
+  const dom = readDomChat();
+  if (dom.length) chatSource = 'dom';
+  return dom;
 }
 
 export function extractRecentConversation(chat, maxMessages = 10, maxChars = 14000) {
@@ -37,7 +110,8 @@ export function extractRecentConversation(chat, maxMessages = 10, maxChars = 140
   const lines = [];
   for (const message of tail) {
     const name = message.name || (message.is_user ? '玩家' : '角色');
-    const content = String(message.mes || message.content || '').replace(/\s+/g, ' ').trim();
+    const raw = message.mes ?? message.content ?? message.text ?? message.message ?? '';
+    const content = String(raw).replace(/\s+/g, ' ').trim();
     if (!content) continue;
     lines.push(`${name}：${content}`);
   }
@@ -238,6 +312,10 @@ export function buildInjectionGuide(options = {}) {
   const guide = [...DEFAULT_GUIDE];
   if (preset?.injectGuide) guide.push(compact(preset.injectGuide));
   if (custom) guide.push(custom);
+  const daily = compact(options.dailyPrompt).slice(0, 260);
+  if (daily) guide.push(`日常要这样写：${daily}`);
+  const festival = compact(options.festivalPrompt).slice(0, 260);
+  if (festival) guide.push(`节庆要这样写：${festival}`);
   return guide.map((line, index) => `${index + 1}. ${line}`).join('\n');
 }
 
@@ -324,6 +402,8 @@ export function buildWorldContext(state, options = {}) {
   })));
 
   sections.push(section('当地风声', rumorLines(state, focus)));
+
+  if (options.loreDigest) sections.push(section('世界书要点', String(options.loreDigest).split('\n').slice(0, 24)));
 
   sections.push(section('节令与日常', dailyLines(state, options)));
 

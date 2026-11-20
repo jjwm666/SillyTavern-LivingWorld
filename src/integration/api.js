@@ -98,6 +98,27 @@ export class WorldAPI {
     throw lastError || new Error('后台推演请求失败');
   }
 
+  /** 纯文本补全：用于生成日常 / 节庆提示词这类不该被 JSON 约束的内容。 */
+  async completeText(prompt, { signal, systemPrompt } = {}) {
+    const settings = this.getSettings();
+    const retries = Math.max(0, Number(settings.maxRetries) || 0);
+    let lastError;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      try {
+        const raw = settings.connectionMode === 'custom'
+          ? await this.requestCustom(prompt, { signal, systemPrompt, json: false })
+          : await this.requestSillyTavern(prompt, { signal, systemPrompt });
+        return String(raw || '').trim();
+      } catch (error) {
+        lastError = error;
+        if (error?.name === 'AbortError') throw error;
+        if (attempt < retries) await sleep(600 * (attempt + 1), signal);
+      }
+    }
+    throw lastError || new Error('后台生成请求失败');
+  }
+
   async requestSillyTavern(prompt, { signal, systemPrompt }) {
     const context = this.getContext();
     if (!context?.generateRaw) throw new Error('当前酒馆版本不支持 generateRaw，请升级酒馆或配置独立 API');
@@ -111,7 +132,7 @@ export class WorldAPI {
     return withAbort(request, signal);
   }
 
-  async requestCustom(prompt, { signal, systemPrompt }) {
+  async requestCustom(prompt, { signal, systemPrompt, json = true }) {
     const settings = this.getSettings();
     if (!settings.customModel) throw new Error('请填写独立 API 的模型名');
     const controller = new AbortController();
@@ -126,7 +147,7 @@ export class WorldAPI {
       ],
       temperature: Number(settings.temperature) || 0.7,
       max_tokens: Number(settings.maxTokens) || 12000,
-      response_format: { type: 'json_object' },
+      ...(json ? { response_format: { type: 'json_object' } } : {}),
     };
     const headers = { 'Content-Type': 'application/json' };
     if (settings.customApiKey) headers.Authorization = `Bearer ${settings.customApiKey}`;

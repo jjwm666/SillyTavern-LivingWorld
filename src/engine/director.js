@@ -189,6 +189,8 @@ const RELATION_DIMENSION_GUIDE = RELATION_DIMENSIONS
 export function buildEvolutionPrompt(state, conversation = '', options = {}) {
   const brief = buildDirectorBrief(state, conversation, options);
   const directive = customDirectives(options, 'evolutionPrompt');
+  const daily = text(options.dailyPrompt, 900);
+  const festival = text(options.festivalPrompt, 900);
   return [
     '你是这个世界幕后推演的导演。你不写正文，只输出世界接下来一轮发生了什么。',
     '硬性要求：',
@@ -203,6 +205,8 @@ export function buildEvolutionPrompt(state, conversation = '', options = {}) {
     '7. 不要凭空制造灾难。任何重大变故都要有前置条件，并且可以用 1-2 句话追溯到已有的趋势、派系不满或旧账。',
     '8. factionClans 是可选字段：只有当角色卡设定或当前局势要求出现新的内部派系、或既有派系的诉求应当改变时才填。派系名必须符合这个世界的语言与组织身份（不要用"激进派/务实派"这类通用词，除非确实贴切），每个势力最多 4 个派系，demand 用给定枚举。',
     '9. rumorProposals 必须给出 scope：official（官方通告，可信、传得快）、regional（区域消息，出不了本地）、street（小道消息，真假难辨）、secret（密闻，几乎不扩散）。reach 是它最多能传到的地区数（1-12），可以按局势调大或调小。',
+    daily ? `10. 日常基调：${daily}` : '',
+    festival ? `11. 节庆写法：${festival}` : '',
     '输出结构：',
     '{',
     '  "npcIntents": [{ "npcId": "", "action": "pursue_goal|travel|investigate|trade|aid|scheme|recruit|confront|spread_rumor|rest|seek_player", "goal": "", "targetId": "", "targetRegionId": "", "summary": "一句话说明他为什么这么做", "secret": false }],',

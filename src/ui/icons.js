@@ -25,6 +25,9 @@ const paths = {
   check: '<path d="m5 12 4 4L19 6"/>',
   alert: '<path d="M12 3 2 21h20zM12 9v5M12 18h.01"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  undo: '<path d="M4 9h9a5 5 0 0 1 0 10H8"/><path d="m8 5-4 4 4 4"/>',
+  book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"/><path d="M4 5.5v16M9 7h7M9 11h7"/>',
+  spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/>',
 };
 
 export function icon(name, size = 18, className = '') {

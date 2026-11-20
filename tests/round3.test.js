@@ -79,8 +79,18 @@ test('readChat 能从三种上下文来源读到正文', () => {
   }
 });
 
-test('面板顶栏只有一个推演按钮，其余动作在弹出菜单里', () => {
+test('顶栏推进按钮左侧有独立的回退与重 roll 按钮，其余动作在弹出菜单里', () => {
   const panel = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const start = panel.indexOf('<div class="lw-run-controls">');
+  const end = panel.indexOf('</header>', start);
+  assert.ok(start > -1 && end > start, '顶栏应有推演控制组');
+  const controls = panel.slice(start, end);
+  const rollbackAt = controls.indexOf('data-lw-action="rollback-turn"');
+  const rerollAt = controls.indexOf('data-lw-action="reroll-turn" data-mode="dice"');
+  const runAt = controls.indexOf('lw-run-toggle');
+  assert.ok(rollbackAt > -1 && rerollAt > -1 && runAt > -1, '回退、重 roll 与推演按钮都要在控制组内');
+  assert.ok(rollbackAt < runAt && rerollAt < runAt, '回退与重 roll 必须在推进按钮左边');
+  assert.ok(controls.includes('lw-turn-button'), '独立按钮使用 lw-turn-button 样式');
   assert.ok(panel.includes('data-lw-action="run-menu"'));
   for (const action of ['evolve', 'reroll-turn', 'discard-evolution', 'rollback-turn']) {
     assert.ok(panel.includes(`data-lw-action="${action}"`), `菜单应包含 ${action}`);

@@ -5,7 +5,7 @@ import { icon } from './icons.js';
 import {
   MAP_MAX_SCALE, MAP_MIN_SCALE, normalizeMapView,
   renderDice, renderEmpty, renderEvents, renderFactions, renderMap,
-  renderNpcInspector, renderOverview, renderPeople, renderPlayer, renderSettings,
+  renderLore, renderNpcInspector, renderOverview, renderPeople, renderPlayer, renderSettings,
 } from './views.js';
 
 const tabs = [
@@ -13,6 +13,7 @@ const tabs = [
   ['player', '生涯', 'target'],
   ['people', '人物', 'users'],
   ['map', '地图', 'map'],
+  ['lore', '节庆·日常', 'book'],
   ['factions', '势力', 'factions'],
   ['events', '事件', 'events'],
   ['dice', '骰点', 'dice'],
@@ -26,6 +27,8 @@ export class LivingWorldPanel {
     this.settings = { ...DEFAULT_SETTINGS };
     this.status = { kind: 'idle', message: '等待世界初始化' };
     this.activeTab = 'overview';
+    this.loreCatalog = { books: [] };
+    this.loreBusy = false;
     this.selectedNpcId = null;
     this.selectedRegionId = null;
     this.selectedFactionId = null;
@@ -75,7 +78,7 @@ export class LivingWorldPanel {
           <div class="lw-sidebar-foot"><span class="lw-engine-pulse"></span><div><strong>LOCAL RULE ENGINE</strong><small>意图由模型提出 · 结果由规则判定</small></div></div>
         </aside>
         <div class="lw-workspace">
-          <header class="lw-header"><div class="lw-header-world"><button class="lw-icon-button lw-mobile-menu" data-lw-action="toggle-nav" aria-label="切换导航">${icon('menu')}</button><div><span class="lw-kicker">WORLD OBSERVATORY</span><h1 id="lw-world-title">尚未初始化世界</h1></div></div><div class="lw-header-actions"><span id="lw-run-status" class="lw-run-status"><i></i><span>待命</span></span><div class="lw-run-controls"><button class="lw-icon-button lw-run-toggle" data-lw-action="run-menu" title="推演与重掷" aria-haspopup="true" aria-expanded="false">${icon('play')}</button><button class="lw-icon-button" data-lw-action="cancel-evolve" title="取消后台推演" disabled>${icon('stop')}</button><div class="lw-run-menu" data-lw-run-menu role="menu"><button type="button" role="menuitem" data-lw-action="evolve"><strong>开始推演</strong><small>往下推进一轮世界</small></button><button type="button" role="menuitem" data-lw-action="reroll-turn" data-mode="dice"><strong>重 roll 本轮</strong><small>保留意图，重掷骰子</small></button><button type="button" role="menuitem" data-lw-action="reroll-turn" data-mode="full"><strong>重推演本轮</strong><small>重新问一次模型再掷</small></button><button type="button" role="menuitem" data-lw-action="discard-evolution"><strong>删除本次推演</strong><small>世界退回这一轮之前</small></button><button type="button" role="menuitem" data-lw-action="rollback-turn"><strong>回退一轮</strong><small>再退到上一轮结束时的世界</small></button></div></div><button class="lw-icon-button" data-lw-action="close" aria-label="关闭">${icon('close')}</button></div></header>
+          <header class="lw-header"><div class="lw-header-world"><button class="lw-icon-button lw-mobile-menu" data-lw-action="toggle-nav" aria-label="切换导航">${icon('menu')}</button><div><span class="lw-kicker">WORLD OBSERVATORY</span><h1 id="lw-world-title">尚未初始化世界</h1></div></div><div class="lw-header-actions"><span id="lw-run-status" class="lw-run-status"><i></i><span>待命</span></span><div class="lw-run-controls"><button class="lw-icon-button lw-turn-button" data-lw-action="rollback-turn" title="回退一轮：回到上一轮结束时的世界" aria-label="回退一轮">${icon('undo')}</button><button class="lw-icon-button lw-turn-button" data-lw-action="reroll-turn" data-mode="dice" title="重 roll 本轮：保留意图，重掷骰子" aria-label="重 roll 本轮">${icon('dice')}</button><button class="lw-icon-button lw-run-toggle" data-lw-action="run-menu" title="推演与重掷" aria-haspopup="true" aria-expanded="false">${icon('play')}</button><button class="lw-icon-button" data-lw-action="cancel-evolve" title="取消后台推演" disabled>${icon('stop')}</button><div class="lw-run-menu" data-lw-run-menu role="menu"><button type="button" role="menuitem" data-lw-action="evolve"><strong>开始推演</strong><small>往下推进一轮世界</small></button><button type="button" role="menuitem" data-lw-action="reroll-turn" data-mode="dice"><strong>重 roll 本轮</strong><small>保留意图，重掷骰子</small></button><button type="button" role="menuitem" data-lw-action="reroll-turn" data-mode="full"><strong>重推演本轮</strong><small>重新问一次模型再掷</small></button><button type="button" role="menuitem" data-lw-action="discard-evolution"><strong>删除本次推演</strong><small>世界退回这一轮之前</small></button><button type="button" role="menuitem" data-lw-action="rollback-turn"><strong>回退一轮</strong><small>再退到上一轮结束时的世界</small></button></div></div><button class="lw-icon-button" data-lw-action="close" aria-label="关闭">${icon('close')}</button></div></header>
           <main id="lw-content" class="lw-content"></main>
         </div>
         <aside id="lw-inspector" class="lw-inspector" aria-label="人物详情"><button class="lw-icon-button lw-inspector-close" data-lw-action="close-inspector" aria-label="关闭详情">${icon('close')}</button><div id="lw-inspector-body"></div></aside>
@@ -109,6 +112,12 @@ export class LivingWorldPanel {
     this.applyAppearance();
     // rerender: false 用于拉取模型列表这类「不该重载表单」的场景
     if (rerender) this.render();
+  }
+
+  setLoreCatalog(catalog) {
+    this.loreCatalog = catalog && Array.isArray(catalog.books) ? catalog : { books: [] };
+    if (this.activeTab === 'lore') this.render();
+    return this.loreCatalog;
   }
 
   setStatus(status) {
@@ -148,10 +157,11 @@ export class LivingWorldPanel {
     this.cancelInlineEdit();
     this.renderHeader();
     const content = this.root.querySelector('#lw-content');
-    if (!this.world && this.activeTab !== 'settings') {
+    if (!this.world && this.activeTab !== 'settings' && this.activeTab !== 'lore') {
       content.innerHTML = renderEmpty(this.status);
     } else {
       switch (this.activeTab) {
+        case 'lore': content.innerHTML = renderLore(this.world, this.settings, this.loreCatalog, this.status); break;
         case 'player': content.innerHTML = renderPlayer(this.world); break;
         case 'people': content.innerHTML = renderPeople(this.world, this.peopleSearch, this.peopleMode, this.peopleFocusId, this.viewStates.people); break;
         case 'map': content.innerHTML = renderMap(this.world, this.selectedRegionId, this.viewStates.map, this.getMapScope(), this.mapStyleMode === 'auto' ? (this.settings.mapStyle || 'auto') : this.mapStyleMode); break;
@@ -330,6 +340,133 @@ export class LivingWorldPanel {
     if (action === 'rollback-turn') {
       this.closeRunMenu();
       await this.callbacks.onRollbackTurn?.();
+      return;
+    }
+    if (action === 'lore-load') {
+      if (this.loreBusy) return;
+      this.loreBusy = true;
+      this.notify('正在读取世界书条目…');
+      try {
+        await this.callbacks.onLoadLore?.();
+        this.notify('世界书已更新');
+      } catch (error) {
+        this.notify(`读取世界书失败：${error.message}`, 'error');
+      } finally {
+        this.loreBusy = false;
+      }
+      return;
+    }
+    if (action === 'lore-book-toggle') {
+      const name = target.dataset.book || '';
+      const origin = target.dataset.origin || 'extra';
+      const settings = this.settings;
+      let patch;
+      if (origin === 'card') {
+        patch = { loreIncludeCard: settings.loreIncludeCard === false };
+      } else if (origin === 'global') {
+        patch = { loreIncludeGlobal: settings.loreIncludeGlobal === false };
+      } else {
+        const list = Array.isArray(settings.loreBooks) ? [...settings.loreBooks] : [];
+        const index = list.indexOf(name);
+        if (index >= 0) list.splice(index, 1); else list.push(name);
+        patch = { loreBooks: list };
+      }
+      this.settings = { ...settings, ...patch };
+      this.render();
+      await this.callbacks.onLoreSettingsChange?.(patch);
+      return;
+    }
+    if (action === 'lore-remove-book') {
+      const name = target.dataset.book || '';
+      const list = (Array.isArray(this.settings.loreBooks) ? this.settings.loreBooks : []).filter((item) => item !== name);
+      const selection = { ...(this.settings.loreSelection || {}) };
+      delete selection[name];
+      const patch = { loreBooks: list, loreSelection: selection };
+      this.settings = { ...this.settings, ...patch };
+      this.render();
+      await this.callbacks.onLoreSettingsChange?.(patch);
+      await this.callbacks.onLoadLore?.();
+      return;
+    }
+    if (action === 'lore-add-book') {
+      const input = this.root.querySelector('#lw-lore-book-name');
+      const name = String(input?.value || '').trim();
+      if (!name) { this.notify('先在世界书名称里填一个名字'); return; }
+      const list = Array.isArray(this.settings.loreBooks) ? [...this.settings.loreBooks] : [];
+      if (!list.includes(name)) list.push(name);
+      await this.callbacks.onLoreSettingsChange?.({ loreBooks: list });
+      await this.callbacks.onLoadLore?.();
+      this.notify(`已加入《${name}》，条目正在读取`);
+      return;
+    }
+    if (action === 'lore-entry-toggle') {
+      const bookName = target.dataset.book || '';
+      const uid = String(target.dataset.uid || '');
+      const book = (this.loreCatalog.books || []).find((item) => item.name === bookName);
+      if (!book) return;
+      const activeUids = book.entries.filter((entry) => entry.enabled).map((entry) => String(entry.uid));
+      const current = this.settings.loreSelection?.[bookName];
+      const picked = Array.isArray(current) ? [...current] : [...activeUids];
+      const index = picked.indexOf(uid);
+      if (index >= 0) picked.splice(index, 1); else picked.push(uid);
+      const patch = { loreSelection: { ...(this.settings.loreSelection || {}), [bookName]: picked } };
+      this.settings = { ...this.settings, ...patch };
+      this.render();
+      await this.callbacks.onLoreSettingsChange?.(patch);
+      return;
+    }
+    if (action === 'lore-entries-all') {
+      const bookName = target.dataset.book || '';
+      const on = target.dataset.value === 'on';
+      const book = (this.loreCatalog.books || []).find((item) => item.name === bookName);
+      if (!book) return;
+      const next = on ? book.entries.filter((entry) => entry.enabled).map((entry) => String(entry.uid)) : [];
+      const patch = { loreSelection: { ...(this.settings.loreSelection || {}), [bookName]: next } };
+      this.settings = { ...this.settings, ...patch };
+      this.render();
+      await this.callbacks.onLoreSettingsChange?.(patch);
+      return;
+    }
+    if (action === 'lore-generate-prompt') {
+      const kind = target.dataset.kind === 'festival' ? 'festival' : 'daily';
+      const field = kind === 'festival' ? 'festivalPrompt' : 'dailyPrompt';
+      const textarea = this.root.querySelector(`#lw-lore-form [name="${field}"]`);
+      const instruction = String(this.root.querySelector('#lw-lore-instruction')?.value || '').trim();
+      if (target.disabled) return;
+      target.disabled = true;
+      this.notify('正在让接入的 API 生成提示词…');
+      try {
+        const generated = await this.callbacks.onGenerateLorePrompt?.({ kind, instruction });
+        if (generated && textarea) {
+          textarea.value = generated;
+          textarea.focus();
+          this.notify('已生成新提示词，可继续修改后保存');
+        }
+      } catch (error) {
+        this.notify(`生成失败：${error.message}`, 'error');
+      } finally {
+        target.disabled = false;
+      }
+      return;
+    }
+    if (action === 'lore-save-preset') {
+      const name = String(this.root.querySelector('#lw-lore-preset-name')?.value || '').trim();
+      if (!name) { this.notify('先给新预设起个名字', 'error'); return; }
+      const dailyPrompt = String(this.root.querySelector('#lw-lore-form [name="dailyPrompt"]')?.value || '');
+      const festivalPrompt = String(this.root.querySelector('#lw-lore-form [name="festivalPrompt"]')?.value || '');
+      const list = Array.isArray(this.settings.customPromptPresets) ? this.settings.customPromptPresets : [];
+      const preset = {
+        id: `custom_${Date.now()}`,
+        name,
+        bootstrapPrompt: this.settings.bootstrapPrompt || '',
+        evolutionPrompt: this.settings.evolutionPrompt || '',
+        dailyPrompt,
+        festivalPrompt,
+      };
+      const customPromptPresets = [...list.filter((item) => item.name !== name), preset];
+      this.settings = { ...this.settings, customPromptPresets };
+      await this.callbacks.onLoreSettingsChange?.({ customPromptPresets });
+      this.notify(`提示词预设「${name}」已保存`);
       return;
     }
     if (action === 'toggle') {
@@ -565,6 +702,23 @@ export class LivingWorldPanel {
   }
 
   async handleSubmit(event) {
+    if (event.target.id === 'lw-lore-form') {
+      event.preventDefault();
+      const data = new FormData(event.target);
+      const settings = {
+        loreEnabled: data.has('loreEnabled'),
+        dailyLife: data.has('dailyLife'),
+        dailyActors: Math.max(1, Math.min(6, Number(data.get('dailyActors')) || 2)),
+        festivals: data.has('festivals'),
+        festivalFromWorldbook: data.has('festivalFromWorldbook'),
+        dailyPrompt: String(data.get('dailyPrompt') || '').trim(),
+        festivalPrompt: String(data.get('festivalPrompt') || '').trim(),
+        customFestivals: String(data.get('customFestivals') || '').trim(),
+      };
+      this.settings = { ...this.settings, ...settings };
+      await this.callbacks.onLoreSettingsChange?.(settings);
+      return;
+    }
     if (event.target.id !== 'lw-settings-form') return;
     event.preventDefault();
     const data = new FormData(event.target);
