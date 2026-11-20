@@ -1,6 +1,6 @@
 import { ACTION_LABELS, CLAN_DEMANDS, FACTION_TIERS, PROMPT_PRESETS, RELATION_DIMENSIONS } from '../engine/constants.js';
 import { clanStance, clanStanding, describeRelationTension } from '../engine/factions.js';
-import { byId, escapeHtml, formatNumber, outcomeLabel, relationLabel } from '../engine/utils.js';
+import { byId, escapeHtml, formatNumber, hashNumber, outcomeLabel, relationLabel } from '../engine/utils.js';
 import { icon } from './icons.js';
 
 const e = escapeHtml;
@@ -39,6 +39,104 @@ function viewportTransform(view) {
   const safe = normalizeMapView(view || {});
   return `translate(${safe.x.toFixed(2)} ${safe.y.toFixed(2)}) scale(${safe.scale.toFixed(4)})`;
 }
+
+/** 极简 GIS 制图风格的可复现伪随机源。 */
+/**
+ * 就地修改：任何包在 editable() 里的文字或数字，在面板里点一下就能改。
+ * kind:id:path:type 四段交给 engine/edits.js 校验与写入，视图不碰数据。
+ */
+function editable(kind, id, path, text, options = {}) {
+  const { type = 'text', className = '', label = '', value = null } = options;
+  const valueAttr = value === null || value === undefined ? '' : ` data-lw-value="${e(String(value))}"`;
+  const title = label ? `点击修改：${e(label)}` : '点击修改';
+  return `<span class="lw-editable${className ? ` ${className}` : ''}" data-lw-edit="${e(`${kind}:${id}:${path}:${type}`)}"${valueAttr} role="button" tabindex="0" title="${title}">${text}</span>`;
+}
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function random() {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * 极简单色制图底图：浅灰矢量线条、柔白底色、低饱和灰蓝水域、道路分级、
+ * 运河与桥梁、街区肌理。同一个区域每次渲染都得到同一张图（按 id 播种），
+ * 层级越深街区越细，视觉上像一张真正的城市测绘稿。
+ */
+function cityFabric(seedText, depth = 0) {
+  const rng = mulberry32(hashNumber(`atlas:${seedText}`));
+  const width = 1000;
+  const height = 560;
+  const detail = Math.min(3, Math.max(0, Number(depth) || 0));
+  const lift = 4 - detail;
+  const out = [];
+
+  // 水系：一条横贯画面的河，加两条支流运河
+  const riverY = 130 + rng() * (height - 260);
+  const sway = 34 + rng() * 74;
+  const river = `M -100 ${riverY.toFixed(0)} C 210 ${(riverY - sway).toFixed(0)}, 430 ${(riverY + sway).toFixed(0)}, 680 ${(riverY - sway * 0.35).toFixed(0)} S 980 ${(riverY + sway * 0.45).toFixed(0)}, 1120 ${riverY.toFixed(0)}`;
+  out.push(`<path class="lw-atlas-water" d="${river}"/>`);
+  out.push(`<path class="lw-atlas-bank" d="${river}"/>`);
+  const canalX = 180 + rng() * 420;
+  const canal = `M ${canalX.toFixed(0)} -60 L ${(canalX + (rng() - 0.5) * 90).toFixed(0)} ${(riverY - sway * 0.5).toFixed(0)}`;
+  out.push(`<path class="lw-atlas-canal" d="${canal}"/>`);
+  out.push(`<path class="lw-atlas-canal" d="M ${(canalX + 210).toFixed(0)} ${(riverY + sway * 0.6).toFixed(0)} L ${(canalX + 240 + rng() * 60).toFixed(0)} ${height + 60}"/>`);
+
+  // 街区肌理：先生在网格里排布建块，再压上道路，看起来就是城市纹理
+  const cols = 5 + detail + lift;
+  const rows = 3 + detail + lift;
+  const cellW = width / cols;
+  const cellH = height / rows;
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      if (rng() < 0.12) continue;
+      const padX = 6 + rng() * 10;
+      const padY = 5 + rng() * 8;
+      const bw = Math.max(8, cellW - padX * 2 - rng() * 10);
+      const bh = Math.max(6, cellH - padY * 2 - rng() * 8);
+      const x = col * cellW + padX;
+      const y = row * cellH + padY;
+      out.push(`<rect class="lw-atlas-block" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="${(1 + rng() * 2).toFixed(1)}"/>`);
+    }
+  }
+
+  // 道路分级：主干道 → 次级街道 → 巷弄，都是细矢量线
+  const roads = [];
+  for (let index = 1; index < rows; index += 1) {
+    const y = index * cellH;
+    const main = index % 2 === 1;
+    roads.push(`<line class="${main ? 'lw-atlas-road-main' : 'lw-atlas-road'}" x1="-80" y1="${y.toFixed(0)}" x2="${width + 80}" y2="${y.toFixed(0)}"/>`);
+  }
+  for (let index = 1; index < cols; index += 1) {
+    const x = index * cellW;
+    const main = index % 2 === 0;
+    roads.push(`<line class="${main ? 'lw-atlas-road-main' : 'lw-atlas-road'}" x1="${x.toFixed(0)}" y1="-80" x2="${x.toFixed(0)}" y2="${height + 80}"/>`);
+  }
+  const alleys = 6 + detail * 4;
+  for (let index = 0; index < alleys; index += 1) {
+    const x = rng() * width;
+    roads.push(`<line class="lw-atlas-alley" x1="${x.toFixed(0)}" y1="-40" x2="${(x + (rng() - 0.5) * 60).toFixed(0)}" y2="${height + 40}"/>`);
+  }
+  out.push(`<g class="lw-atlas-roads">${roads.join('')}</g>`);
+
+  // 桥：纵向干道跨河的短粗线段
+  const bridges = [];
+  for (let index = 1; index < cols; index += 1) {
+    const x = index * cellW;
+    const around = Math.abs((x - 500) / 500);
+    const crossingY = riverY - sway * 0.4 + around * 20;
+    bridges.push(`<line class="lw-atlas-bridge" x1="${(x - 7).toFixed(0)}" y1="${crossingY.toFixed(0)}" x2="${(x + 7).toFixed(0)}" y2="${crossingY.toFixed(0)}"/>`);
+  }
+  out.push(`<g class="lw-atlas-bridges">${bridges.join('')}</g>`);
+
+  return `<g class="lw-atlas-fabric" aria-hidden="true">${out.join('')}</g>`;
+}
+
 
 export function renderEmpty(status) {
   const busy = status?.kind === 'running';
@@ -87,7 +185,7 @@ export function renderOverview(world) {
   </article>`).join('') || '<div class="lw-no-data">当前没有持续事件。</div>';
   return `<div class="lw-overview lw-view-enter">
     <section class="lw-world-brief">
-      <div class="lw-brief-copy"><span class="lw-kicker">WORLD PULSE / ${e(world.calendar.turnLabel)}</span><h2>${e(world.name)}</h2><p>${e(world.worldDigest)}</p>
+      <div class="lw-brief-copy"><span class="lw-kicker">WORLD PULSE / ${e(world.calendar.turnLabel)}</span><h2>${editable('world', 'world', 'name', e(world.name), { label: '世界名' })}</h2><p>${editable('world', 'world', 'worldDigest', e(world.worldDigest), { type: 'textarea', label: '世界脉搏' })}</p>
         <div class="lw-trend-line">${world.trends.slice(0, 3).map((trend) => `<span>${icon('events', 13)}${e(trend.name)}<b>${trend.intensity}</b></span>`).join('')}</div>
       </div>
       <div class="lw-round-seal"><span>ROUND</span><strong>${String(world.round).padStart(3, '0')}</strong><small>${e(world.economy.climate)} · ${world.economy.priceIndex}</small></div>
@@ -121,8 +219,8 @@ export function renderPlayer(world) {
   const ledger = [...world.economy.ledger].reverse().slice(0, 14).map((entry) => `<div class="lw-ledger-row"><span><strong>${e(entry.reason)}</strong><small>第 ${entry.round} 轮 · ${e(byId(world.regions, entry.regionId)?.name || '未知地区')}</small></span><b class="${entry.amount >= 0 ? 'positive' : 'negative'}">${entry.amount >= 0 ? '+' : ''}${entry.amount}</b><span>余 ${entry.balance}</span></div>`).join('');
   const prices = [...world.regions].sort((a, b) => b.priceIndex - a.priceIndex).map((region) => `<button class="lw-price-row" data-lw-action="region-open" data-id="${e(region.id)}"><span>${e(region.name)}<small>${e(region.weather.type)} · 天气影响 ${region.weather.intensity}/3</small></span><b>${region.priceIndex}</b>${meter(Math.min(100, region.priceIndex / 2), region.priceIndex > 140 ? 'danger' : 'amber')}</button>`).join('');
   return `<section class="lw-career lw-view-enter">${sectionHeading('A LIFE INSIDE THE WORLD', '玩家生涯、声誉与经济', `<span class="lw-count-label">${e(playerRegion?.name || '未知所在地')}</span>`)}
-    <div class="lw-career-hero"><div><span class="lw-kicker">CURRENT STANDING</span><h2>${e(world.player.name)}</h2><p>${e(playerRegion?.name || '未知')} · ${e(playerRegion?.weather.type || '未知天气')}</p></div><div class="lw-wallet"><small>可用资金</small><strong>${formatNumber(world.player.wealth)}</strong><span>累计收入 ${formatNumber(world.player.income)} · 累计支出 ${formatNumber(world.player.expenses)}</span></div></div>
-    <div class="lw-career-grid">${fold(`<div class="lw-panel-heading"><h3>四维声誉</h3><span>实际影响玩家行动修正与势力态度</span></div>`, `<div class="lw-reputation-grid">${reputationMeta.map(([key, label, description]) => { const value = world.player.reputation[key]; return `<article><div><strong>${label}</strong><b class="${value < 0 ? 'negative' : 'positive'}">${value > 0 ? '+' : ''}${value}</b></div><p>${description}</p>${meter(value + 50, value < -20 ? 'danger' : 'teal')}</article>`; }).join('')}</div><h4>势力对玩家的态度</h4><div class="lw-player-factions">${world.factions.map((faction) => `<button data-lw-action="faction-open" data-id="${e(faction.id)}"><span><i style="background:${e(faction.color)}"></i>${e(faction.name)}</span><b>${faction.playerRelation > 0 ? '+' : ''}${faction.playerRelation}</b><small>${e(relationLabel(faction.playerRelation))}</small></button>`).join('')}</div>`, { open: true, key: 'player-reputation', hint: '声誉与势力态度' })}
+    <div class="lw-career-hero"><div><span class="lw-kicker">CURRENT STANDING</span><h2>${editable('player', 'player', 'name', e(world.player.name), { label: '玩家名' })}</h2><p>${e(playerRegion?.name || '未知')} · ${e(playerRegion?.weather.type || '未知天气')}</p></div><div class="lw-wallet"><small>可用资金</small><strong>${editable('player', 'player', 'wealth', formatNumber(world.player.wealth), { type: 'number', value: world.player.wealth, label: '可用资金' })}</strong><span>累计收入 ${formatNumber(world.player.income)} · 累计支出 ${formatNumber(world.player.expenses)}</span></div></div>
+    <div class="lw-career-grid">${fold(`<div class="lw-panel-heading"><h3>四维声誉</h3><span>实际影响玩家行动修正与势力态度</span></div>`, `<div class="lw-reputation-grid">${reputationMeta.map(([key, label, description]) => { const value = world.player.reputation[key]; return `<article><div><strong>${label}</strong><b class="${value < 0 ? 'negative' : 'positive'}">${editable('player', 'player', `reputation.${key}`, `${value > 0 ? '+' : ''}${value}`, { type: 'number', value, label })}</b></div><p>${description}</p>${meter(value + 50, value < -20 ? 'danger' : 'teal')}</article>`; }).join('')}</div><h4>势力对玩家的态度</h4><div class="lw-player-factions">${world.factions.map((faction) => `<button data-lw-action="faction-open" data-id="${e(faction.id)}"><span><i style="background:${e(faction.color)}"></i>${e(faction.name)}</span><b>${faction.playerRelation > 0 ? '+' : ''}${faction.playerRelation}</b><small>${e(relationLabel(faction.playerRelation))}</small></button>`).join('')}</div>`, { open: true, key: 'player-reputation', hint: '声誉与势力态度' })}
     ${fold(`<div class="lw-panel-heading"><h3>主动剧情与转折</h3><span>${activeHooks.length} 条进行中</span></div>`, `<div class="lw-story-hooks">${activeHooks.map((hook) => `<article class="lw-hook-${e(hook.kind)}"><span>${hook.kind === 'npc' ? 'NPC 主动行动' : hook.kind === 'complication' ? '意外波折' : '意外机会'} · ${hook.status === 'active' ? '可进入当前剧情' : '正在接近'}</span><h4>${e(hook.title)}</h4><p>${e(hook.content)}</p><small>第 ${hook.createdRound} 轮触发 · 第 ${hook.expiresRound} 轮后自然过期</small></article>`).join('') || '<div class="lw-no-data">NPC 的主动接触与极端骰点转折会出现在这里。</div>'}</div>`, { open: true, key: 'player-hooks', hint: `${activeHooks.length} 条` })}
     ${fold(`<div class="lw-panel-heading"><h3>地区物价与天气</h3><span>世界平均 ${world.economy.priceIndex}</span></div>`, `<div class="lw-price-list">${prices}</div>`, { open: false, key: 'player-prices', hint: `${world.regions.length} 个地区` })}
     ${fold(`<div class="lw-panel-heading"><h3>资金流水</h3><span>最近 ${Math.min(14, world.economy.ledger.length)} 笔</span></div>`, `<div class="lw-ledger">${ledger || '<div class="lw-no-data">推演后会产生补给、交易与行动收支。</div>'}</div>`, { open: false, key: 'player-ledger' })}</div>
@@ -191,7 +289,10 @@ export function renderPeopleGraph(world, focusNpcId = null, search = '', view = 
     const to = nodes.get(pair.ids[1]);
     const trust = Math.round(pair.trust / Math.max(1, pair.hits));
     const related = center && pair.ids.includes(center.id);
-    return `<line class="lw-person-edge ${relationTone(trust)}${related ? ' is-focus' : ''}" x1="${from.x.toFixed(1)}" y1="${from.y.toFixed(1)}" x2="${to.x.toFixed(1)}" y2="${to.y.toFixed(1)}" stroke-width="${(0.8 + Math.abs(trust) / 22).toFixed(2)}"><title>${e(from.npc.name)} ⇄ ${e(to.npc.name)}｜信任 ${trust}</title></line>`;
+    const tone = relationTone(trust);
+    const width = (1.4 + Math.abs(trust) / 14).toFixed(2);
+    const stroke = tone === 'warm' ? '#57d3a7' : tone === 'hostile' ? '#ef7568' : '#9db2ac';
+    return `<line class="lw-person-edge ${tone}${related ? ' is-focus' : ''}" x1="${from.x.toFixed(1)}" y1="${from.y.toFixed(1)}" x2="${to.x.toFixed(1)}" y2="${to.y.toFixed(1)}" style="stroke:${stroke};stroke-width:${width}px;stroke-opacity:${related ? 0.95 : 0.6};stroke-linecap:round"><title>${e(from.npc.name)} ⇄ ${e(to.npc.name)}｜信任 ${trust}</title></line>`;
   }).join('');
   const nodeMarkup = [...nodes.values()].map(({ npc, x, y, r }) => {
     const faction = byId(world.factions, npc.factionId);
@@ -273,9 +374,11 @@ export function normalizeMapView(view) {
   return { scale, x, y };
 }
 
-export function renderMap(world, selectedRegionId, view = {}, scope = {}) {
+export function renderMap(world, selectedRegionId, view = {}, scope = {}, styleMode = 'auto') {
   const regions = scope.regions || world.regions;
   const path = scope.path || [];
+  // auto：世界层用深色星图，进入次级 / 次次级后自动切成极简制图
+  const atlas = styleMode === 'atlas' || (styleMode !== 'dark' && path.length > 0);
   const parent = path.at(-1) || null;
   const selected = byId(regions, selectedRegionId);
   const mapView = normalizeMapView(view);
@@ -289,7 +392,8 @@ export function renderMap(world, selectedRegionId, view = {}, scope = {}) {
       if (seen.has(key)) continue;
       seen.add(key);
       const highlighted = selected && (region.id === selected.id || target.id === selected.id);
-      lines.push(`<line class="lw-map-route ${highlighted ? 'highlighted' : ''}" x1="${region.x}" y1="${region.y}" x2="${target.x}" y2="${target.y}"><title>${e(region.name)} ↔ ${e(target.name)} · 距离 ${edge.distance}</title></line>`);
+      const weight = Math.max(1, Math.min(4, Number(edge.distance) || 1));
+      lines.push(`<line class="lw-map-route ${highlighted ? 'highlighted' : ''}" x1="${region.x}" y1="${region.y}" x2="${target.x}" y2="${target.y}" style="stroke-width:${(atlas ? 1.8 + weight * 0.55 : 2.4 + weight * 0.7).toFixed(2)}px"><title>${e(region.name)} ↔ ${e(target.name)} · 距离 ${edge.distance}</title></line>`);
     }
   }
   const nodes = regions.map((region) => {
@@ -306,12 +410,14 @@ export function renderMap(world, selectedRegionId, view = {}, scope = {}) {
       ${childCount ? `<text class="lw-map-node-children" x="${region.x + 24}" y="${region.y - 20}" text-anchor="middle">+${childCount}</text>` : ''}
     </g>`;
   }).join('');
-  const breadcrumbs = `<nav class="lw-map-breadcrumbs" aria-label="地图层级"><button data-lw-action="map-root">世界</button>${path.map((region, index) => `<span>/</span><button data-lw-action="map-path" data-depth="${index}" class="${index === path.length - 1 ? 'current' : ''}">${e(region.name)}</button>`).join('')}</nav>`;
+  const styleButton = `<button class="lw-map-style-button" data-lw-action="map-style" title="切换地图绘制风格">${icon('map', 13)}${atlas ? '极简制图' : '深色星图'}</button>`;
+  const breadcrumbs = `<nav class="lw-map-breadcrumbs" aria-label="地图层级"><button data-lw-action="map-root">世界</button>${path.map((region, index) => `<span>/</span><button data-lw-action="map-path" data-depth="${index}" class="${index === path.length - 1 ? 'current' : ''}">${e(region.name)}</button>`).join('')}${styleButton}</nav>`;
   return `<section class="lw-map-view lw-view-enter">${sectionHeading('GEOGRAPHY IS DESTINY', parent ? `${parent.name} · 次级地图` : '世界地图', zoomBar('map', mapView.scale))}
-    ${breadcrumbs}<div class="lw-map-layout"><div class="lw-map-canvas lw-zoomable" data-lw-pan-zoom="map" tabindex="0" role="application" aria-label="可缩放、可拖动的区域地图">
+    ${breadcrumbs}<div class="lw-map-layout"><div class="lw-map-canvas lw-zoomable${atlas ? ' lw-map-atlas' : ''}" data-lw-pan-zoom="map" tabindex="0" role="application" aria-label="可缩放、可拖动的区域地图">
       <svg viewBox="0 0 1000 560" role="img" aria-label="可点击的多级区域与路线图"><defs><pattern id="lw-grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="currentColor" stroke-width=".5"/></pattern></defs>
         <g class="lw-map-viewport" data-lw-viewport transform="${viewportTransform(mapView)}">
-          <rect class="lw-map-grid" x="-1200" y="-1200" width="3400" height="3000" fill="url(#lw-grid)"/>${lines.join('')}${nodes || '<text x="500" y="280" text-anchor="middle" class="lw-map-node-label">当前层级暂无区域</text>'}
+          <rect class="lw-map-grid" x="-1200" y="-1200" width="3400" height="3000" fill="${atlas ? 'none' : 'url(#lw-grid)'}"/>
+          ${atlas ? cityFabric(parent?.id || scope.seed || 'world', path.length) : ''}${lines.join('')}${nodes || '<text x="500" y="280" text-anchor="middle" class="lw-map-node-label">当前层级暂无区域</text>'}
         </g>
       </svg>
       ${zoomHint()}
@@ -325,10 +431,10 @@ function renderRegionDetail(world, region, regions = world.regions) {
   const faction = byId(world.factions, region.controlFactionId);
   const people = world.npcs.filter((npc) => npc.locationId === region.id && npc.alive);
   const routes = region.neighbors.map((edge) => `<button data-lw-action="region-select" data-id="${e(edge.targetId)}"><span>${e(byId(regions, edge.targetId)?.name || edge.targetId)}</span><small>${e(edge.terrain)} · ${edge.distance}</small></button>`).join('');
-  return `<div class="lw-region-detail"><span class="lw-kicker">REGION DOSSIER</span><h3>${e(region.name)}</h3><p>${e(region.description)}</p>
+  return `<div class="lw-region-detail"><span class="lw-kicker">REGION DOSSIER</span><h3>${editable('region', region.id, 'name', e(region.name), { label: '地区名' })}</h3><p>${editable('region', region.id, 'description', e(region.description), { type: 'textarea', label: '地区描述' })}</p>
     ${region.children?.length ? `<button class="lw-button lw-primary lw-region-enter" data-lw-action="region-enter" data-id="${e(region.id)}">进入 ${region.children.length} 个次级区域${icon('chevron', 14)}</button>` : ''}
-    ${fold('地区数值', `<div class="lw-detail-stats"><span><small>控制势力</small><strong style="color:${e(faction?.color || '#fff')}">${e(faction?.name || '无')}</strong></span><span><small>背景人口</small><strong>${formatNumber(region.population)}</strong></span><span><small>当地天气</small><strong>${e(region.weather.type)} · ${region.weather.intensity}/3</strong></span><span><small>地方物价</small><strong>${region.priceIndex}</strong></span></div>
-    <div class="lw-detail-meter"><span>繁荣 <b>${region.prosperity}</b></span>${meter(region.prosperity)}</div><div class="lw-detail-meter"><span>动荡 <b>${region.unrest}</b></span>${meter(region.unrest, 'danger')}</div>`, { open: true, key: `region-stats-${region.id}`, hint: `繁荣 ${region.prosperity} · 动荡 ${region.unrest}` })}
+    ${fold('地区数值', `<div class="lw-detail-stats"><span><small>控制势力</small><strong style="color:${e(faction?.color || '#fff')}">${e(faction?.name || '无')}</strong></span><span><small>背景人口</small><strong>${editable('region', region.id, 'population', formatNumber(region.population), { type: 'number', value: region.population, label: '背景人口' })}</strong></span><span><small>当地天气</small><strong>${editable('region', region.id, 'weather.type', e(region.weather.type), { label: '天气' })} · ${editable('region', region.id, 'weather.intensity', region.weather.intensity, { type: 'number', value: region.weather.intensity, label: '天气强度' })}/3</strong></span><span><small>地方物价</small><strong>${editable('region', region.id, 'priceIndex', region.priceIndex, { type: 'number', value: region.priceIndex, label: '地方物价' })}</strong></span></div>
+    <div class="lw-detail-meter"><span>繁荣 <b>${editable('region', region.id, 'prosperity', region.prosperity, { type: 'number', value: region.prosperity, label: '繁荣' })}</b></span>${meter(region.prosperity)}</div><div class="lw-detail-meter"><span>动荡 <b>${editable('region', region.id, 'unrest', region.unrest, { type: 'number', value: region.unrest, label: '动荡' })}</b></span>${meter(region.unrest, 'danger')}</div>`, { open: true, key: `region-stats-${region.id}`, hint: `繁荣 ${region.prosperity} · 动荡 ${region.unrest}` })}
     ${fold('同层连接路线', `<div class="lw-route-list">${routes || '<p>当前层级没有登记路线。</p>'}</div>`, { open: false, key: `region-routes-${region.id}`, hint: `${region.neighbors.length} 条` })}
     ${fold(`当前人物 · ${people.length}`, `<div class="lw-mini-people">${people.map((npc) => `<button data-lw-action="npc-select" data-id="${e(npc.id)}"><span class="lw-avatar small">${e(npc.name[0])}</span><span>${e(npc.name)}<small>${e(npc.role)}</small></span></button>`).join('') || '<p>暂无核心人物停留。</p>'}</div>`, { open: true, key: `region-people-${region.id}`, hint: `${people.length} 人` })}
   </div>`;
@@ -359,7 +465,14 @@ export function renderFactions(world, selectedFactionId, view = {}) {
       const dimensions = relation.dimensions || {};
       const hostile = (dimensions.hostility ?? 0) > (dimensions.trust ?? 0);
       const tone = relation.value >= 15 ? 'positive' : relation.value <= -15 ? 'negative' : 'neutral';
-      edges.push(`<line class="lw-relation-edge ${tone} ${hostile ? 'entangled' : ''}" x1="${sourcePosition.x}" y1="${sourcePosition.y}" x2="${targetPosition.x}" y2="${targetPosition.y}" stroke-width="${0.8 + Math.abs(relation.value) / 30 + (relation.tension || 0) / 60}"><title>${e(faction.name)} ↔ ${e(byId(world.factions, targetId)?.name)}：${e(relation.label)} (${relation.value})${relation.tension >= 40 ? ` · 矛盾张力 ${Math.round(relation.tension)}` : ''}</title></line>`);
+      // 关系线：颜色区分合作/冲突，粗细表达强度，矛盾越深越粗
+      const strength = Math.min(100, Math.abs(Number(relation.value) || 0) + (Number(relation.tension) || 0) * 0.6);
+      const width = (1.5 + strength / 16).toFixed(2);
+      const stroke = tone === 'positive' ? '#4fd1a5' : tone === 'negative' ? '#ef7568' : '#9db2ac';
+      const halo = Math.abs(Number(relation.value) || 0) >= 35
+        ? `<line x1="${sourcePosition.x}" y1="${sourcePosition.y}" x2="${targetPosition.x}" y2="${targetPosition.y}" stroke="${stroke}" stroke-width="${(Number(width) + 5).toFixed(2)}" stroke-opacity="0.14" stroke-linecap="round"></line>`
+        : '';
+      edges.push(`${halo}<line class="lw-relation-edge ${tone} ${hostile ? 'entangled' : ''}" x1="${sourcePosition.x}" y1="${sourcePosition.y}" x2="${targetPosition.x}" y2="${targetPosition.y}" style="stroke:${stroke};stroke-width:${width}px;stroke-opacity:${(0.5 + Math.min(0.45, strength / 160)).toFixed(2)};stroke-linecap:round"><title>${e(faction.name)} ↔ ${e(byId(world.factions, targetId)?.name)}：${e(relation.label)} (${relation.value})${relation.tension >= 40 ? ` · 矛盾张力 ${Math.round(relation.tension)}` : ''}</title></line>`);
     }
   }
   const tierLabels = groups.map((group) => `<text class="lw-tier-label" x="${group.x}" y="138" text-anchor="middle">${e(group.tier.label)}${group.count ? ` · ${group.count}` : ''}</text>`).join('');
@@ -383,16 +496,16 @@ export function renderFactions(world, selectedFactionId, view = {}) {
     const demand = CLAN_DEMANDS[clan.demand];
     const standing = clanStanding(selected, clan);
     const stance = clanStance(clan);
-    const body = `<div class="lw-clan-meters"><span><small>人心</small>${meter(clan.satisfaction, clan.satisfaction < 40 ? 'danger' : '')}<b>${clan.satisfaction}</b></span><span><small>势力</small>${meter(clan.strength, 'amber')}<b>${clan.strength}</b></span><span><small>与其他派系</small><b class="lw-clan-standing ${standing.tone}">${standing.label}</b><small>${standing.partner ? `与「${e(standing.partner)}」` : ''}</small></span></div><small class="lw-clan-note">${e(clan.note || demand?.description || '暂无异动')}</small>`;
+    const body = `<div class="lw-clan-meters"><span><small>人心</small>${meter(clan.satisfaction, clan.satisfaction < 40 ? 'danger' : '')}<b>${editable('clan', clan.id, 'satisfaction', clan.satisfaction, { type: 'number', value: clan.satisfaction, label: `${clan.name}的人心` })}</b></span><span><small>势力</small>${meter(clan.strength, 'amber')}<b>${editable('clan', clan.id, 'strength', clan.strength, { type: 'number', value: clan.strength, label: `${clan.name}的势力` })}</b></span><span><small>与其他派系</small><b class="lw-clan-standing ${standing.tone}">${standing.label}</b><small>${standing.partner ? `与「${e(standing.partner)}」` : ''}</small></span></div><small class="lw-clan-note">${e(clan.note || demand?.description || '暂无异动')}</small>`;
     return `<article class="lw-clan-row"><header><strong>${e(clan.name)}</strong><span class="lw-clan-demand">${e(stance)}</span></header>${fold('人心、势力与关系', body, { hint: `人心 ${clan.satisfaction}｜势力 ${clan.strength}｜${standing.label}` })}</article>`;
   }).join('') : '';
   const overlord = byId(world.factions, selected?.overlordId);
   const vassals = selected ? world.factions.filter((faction) => faction.overlordId === selected.id) : [];
-  const resources = selected ? `<div class="lw-faction-resources"><span><small>稳定</small><b>${selected.stability}</b>${meter(selected.stability)}</span><span><small>权威</small><b>${selected.authority}</b>${meter(selected.authority)}</span><span><small>团结</small><b>${selected.cohesion}</b>${meter(selected.cohesion)}</span><span><small>暗涌</small><b>${selected.tension}</b>${meter(selected.tension, 'danger')}</span><span><small>财富</small><b>${selected.resources.wealth}</b>${meter(selected.resources.wealth, 'amber')}</span><span><small>影响</small><b>${selected.resources.influence}</b>${meter(selected.resources.influence)}</span><span><small>人力</small><b>${selected.resources.manpower}</b>${meter(selected.resources.manpower)}</span></div>` : '';
-  const detail = selected ? `<span class="lw-kicker">FACTION DOSSIER</span><div class="lw-faction-title"><span style="background:${e(selected.color)}"></span><div><h3>${e(selected.name)}</h3><p>${e(selected.description)}</p></div></div>
+  const resources = selected ? `<div class="lw-faction-resources"><span><small>稳定</small><b>${selected.stability}</b>${meter(selected.stability)}</span><span><small>权威</small><b>${editable('faction', selected.id, 'authority', selected.authority, { type: 'number', value: selected.authority, label: '权威' })}</b>${meter(selected.authority)}</span><span><small>团结</small><b>${selected.cohesion}</b>${meter(selected.cohesion)}</span><span><small>暗涌</small><b>${selected.tension}</b>${meter(selected.tension, 'danger')}</span><span><small>财富</small><b>${editable('faction', selected.id, 'resources.wealth', selected.resources.wealth, { type: 'number', value: selected.resources.wealth, label: '势力财富' })}</b>${meter(selected.resources.wealth, 'amber')}</span><span><small>影响</small><b>${editable('faction', selected.id, 'resources.influence', selected.resources.influence, { type: 'number', value: selected.resources.influence, label: '势力影响' })}</b>${meter(selected.resources.influence)}</span><span><small>人力</small><b>${editable('faction', selected.id, 'resources.manpower', selected.resources.manpower, { type: 'number', value: selected.resources.manpower, label: '势力人力' })}</b>${meter(selected.resources.manpower)}</span></div>` : '';
+  const detail = selected ? `<span class="lw-kicker">FACTION DOSSIER</span><div class="lw-faction-title"><span style="background:${e(selected.color)}"></span><div><h3>${editable('faction', selected.id, 'name', e(selected.name), { label: '势力名' })}</h3><p>${editable('faction', selected.id, 'description', e(selected.description), { type: 'textarea', label: '势力描述' })}</p></div></div>
     <div class="lw-faction-tier"><span>${e(tierLabelOf(selected))}</span><span>${overlord ? `附属于 ${e(overlord.name)}` : vassals.length ? `统辖 ${vassals.length} 个势力` : '独立势力'}</span></div>
     ${fold('数值面板', resources, { hint: `稳定 ${selected.stability}｜暗涌 ${selected.tension}` })}
-    <div class="lw-faction-goal"><small>长期目标</small><strong>${e(selected.goal)}</strong></div>
+    <div class="lw-faction-goal"><small>长期目标</small><strong>${editable('faction', selected.id, 'goal', e(selected.goal), { type: 'textarea', label: '长期目标' })}</strong></div>
     <h4>内部派系</h4><div class="lw-clan-list">${clanRows || '<p class="lw-no-data">该势力尚未形成明显的内部派系。</p>'}</div>
     <h4>对外关系</h4><div class="lw-faction-relations">${relationRows || '<p class="lw-no-data">暂无对外关系记录。</p>'}</div>` : '';
 
@@ -422,9 +535,9 @@ export function renderEvents(world) {
     const region = byId(world.regions, event.regionId);
     const terminal = event.status !== 'active';
     const statusLabel = { completed: '已终局', failed: '已失败', archived: '已归档' }[event.status];
-    return `<article class="lw-event-card ${terminal ? 'terminal' : ''}"><div class="lw-event-card-head"><div>${pill(event.type === 'conflict' ? '冲突' : '发展', event.type === 'conflict' ? 'danger' : 'teal')}${pill(`Lv.${event.level}`)}</div><button class="lw-pin-button ${event.pinned ? 'active' : ''}" data-lw-action="toggle-pin" data-kind="event" data-id="${e(event.id)}">${event.pinned ? '★ 已保留' : '☆ 保留'}</button></div><h3>${e(event.name)}</h3><p>${e(event.description)}</p><div class="lw-event-location">${icon('map', 13)}${e(region?.name || '未知区域')}<span>${e(event.stage)}</span></div><div class="lw-stage-track">${[0, 1, 2, 3].map((index) => `<span class="${event.progress / event.requiredProgress * 4 > index ? 'reached' : ''}"><i></i><small>${e(event.type === 'conflict' ? ['萌芽', '发酵', '逼近', '爆发'][index] : ['筹备', '执行', '关键', '完成'][index])}</small></span>`).join('')}</div><div class="lw-event-card-foot"><span>进度 ${event.progress}/${event.requiredProgress}</span><span>连续停滞 ${event.stalls}/3</span>${terminal ? pill(statusLabel || event.status) : ''}</div><small class="lw-retention-note">${event.pinned ? '永久保留，不自动归档' : `终局后保留 ${event.retention} 轮，再自动归档`} · 第 ${event.createdRound} 轮形成</small></article>`;
+    return `<article class="lw-event-card ${terminal ? 'terminal' : ''}"><div class="lw-event-card-head"><div>${pill(event.type === 'conflict' ? '冲突' : '发展', event.type === 'conflict' ? 'danger' : 'teal')}${pill(`Lv.${event.level}`)}</div><button class="lw-pin-button ${event.pinned ? 'active' : ''}" data-lw-action="toggle-pin" data-kind="event" data-id="${e(event.id)}">${event.pinned ? '★ 已保留' : '☆ 保留'}</button></div><h3>${editable('event', event.id, 'name', e(event.name), { label: '事件名' })}</h3><p>${editable('event', event.id, 'description', e(event.description), { type: 'textarea', label: '事件描述' })}</p><div class="lw-event-location">${icon('map', 13)}${e(region?.name || '未知区域')}<span>${e(event.stage)}</span></div><div class="lw-stage-track">${[0, 1, 2, 3].map((index) => `<span class="${event.progress / event.requiredProgress * 4 > index ? 'reached' : ''}"><i></i><small>${e(event.type === 'conflict' ? ['萌芽', '发酵', '逼近', '爆发'][index] : ['筹备', '执行', '关键', '完成'][index])}</small></span>`).join('')}</div><div class="lw-event-card-foot"><span>进度 ${editable('event', event.id, 'progress', event.progress, { type: 'number', value: event.progress, label: '事件进度' })}/${editable('event', event.id, 'requiredProgress', event.requiredProgress, { type: 'number', value: event.requiredProgress, label: '事件目标进度' })}</span><span>连续停滞 ${event.stalls}/3</span>${terminal ? pill(statusLabel || event.status) : ''}</div><small class="lw-retention-note">${event.pinned ? '永久保留，不自动归档' : `终局后保留 ${event.retention} 轮，再自动归档`} · 第 ${event.createdRound} 轮形成</small></article>`;
   }).join('');
-  const rumors = world.rumors.filter((rumor) => rumor.active || rumor.pinned).map((rumor) => `<article class="lw-rumor-card"><div>${pill(rumor.type)}<button class="lw-pin-button ${rumor.pinned ? 'active' : ''}" data-lw-action="toggle-pin" data-kind="rumor" data-id="${e(rumor.id)}">${rumor.pinned ? '★ 已保留' : '☆ 保留'}</button></div><p>${e(rumor.content)}</p><footer><span>${icon('route', 13)}已至 ${rumor.locations.length} 个地区</span><span>当前强度 ${rumor.locations.reduce((sum, location) => sum + location.strength, 0)}</span></footer><small>${rumor.pinned ? '已阻止自然消散' : rumor.active ? '传播停滞时强度逐步衰减，全部归零后消散' : '已消散，仅在保留期内留档'}</small></article>`).join('');
+  const rumors = world.rumors.filter((rumor) => rumor.active || rumor.pinned).map((rumor) => `<article class="lw-rumor-card"><div>${pill(rumor.type)}<button class="lw-pin-button ${rumor.pinned ? 'active' : ''}" data-lw-action="toggle-pin" data-kind="rumor" data-id="${e(rumor.id)}">${rumor.pinned ? '★ 已保留' : '☆ 保留'}</button></div><p>${editable('rumor', rumor.id, 'content', e(rumor.content), { type: 'textarea', label: '风声内容' })}</p><footer><span>${icon('route', 13)}已至 ${rumor.locations.length} 个地区</span><span>当前强度 ${rumor.locations.reduce((sum, location) => sum + location.strength, 0)}</span></footer><small>${rumor.pinned ? '已阻止自然消散' : rumor.active ? '传播停滞时强度逐步衰减，全部归零后消散' : '已消散，仅在保留期内留档'}</small></article>`).join('');
   return `<section class="lw-view-enter">${sectionHeading('CAUSE BEFORE EFFECT', '事件与风声', `<span class="lw-count-label">${world.events.filter((event) => event.status === 'active').length} 个活跃事件</span>`)}
     ${fold('持续事件', `<div class="lw-event-grid">${cards || '<div class="lw-no-data">暂无持续事件，下一轮会通过判定产生变化。</div>'}</div>`, { open: true, key: 'events-list', hint: `${world.events.length} 个` })}
     ${fold('风声传播、保留与消散', `<div class="lw-rumor-grid">${rumors || '<div class="lw-no-data">当前没有活跃或保留的风声。</div>'}</div>`, { open: true, key: 'events-rumors', hint: `${world.rumors.filter((rumor) => rumor.active || rumor.pinned).length} 则` })}
@@ -454,7 +567,7 @@ export function renderDice(world, filter = 'all') {
   </section>`;
 }
 
-export function renderSettings(settings, status, world) {
+export function renderSettings(settings, status, world, models = []) {
   const custom = settings.connectionMode === 'custom';
   const customPresets = Array.isArray(settings.customPromptPresets) ? settings.customPromptPresets : [];
   const presetOptions = [
@@ -464,15 +577,14 @@ export function renderSettings(settings, status, world) {
   return `<section class="lw-settings lw-view-enter">${sectionHeading('ENGINE CONTROL', '世界引擎设置', `<span class="lw-save-state">${e(status?.message || '设置自动保存在当前酒馆')}</span>`)}
     <form id="lw-settings-form" class="lw-settings-form">
       <details class="lw-fold lw-settings-section lw-fold-open" data-fold-key="设置·推演与判定" open><summary><h3>推演与判定</h3></summary><div class="lw-fold-body"><label class="lw-toggle-row"><span><strong>回复后自动记录与推演</strong><small>按下方间隔累计主 AI 回复，达到次数后推进一次世界</small></span><input type="checkbox" name="autoEvolve" ${settings.autoEvolve ? 'checked' : ''}><i></i></label><div class="lw-field-grid"><label>每 X 次回复推演一次<input type="number" name="evolutionInterval" min="1" max="20" value="${settings.evolutionInterval}"><small>1 表示每次回复；待推演进度会随聊天保存</small></label><label>用户全局骰点修正<input type="number" name="diceModifier" min="-10" max="10" value="${settings.diceModifier}"><small>-10 至 +10，叠加到每次本地判定并单独留档</small></label></div><label class="lw-toggle-row"><span><strong>无世界时自动初始化</strong><small>首次回复后根据当前角色卡建立世界</small></span><input type="checkbox" name="autoBootstrap" ${settings.autoBootstrap ? 'checked' : ''}><i></i></label><label class="lw-toggle-row"><span><strong>注入叙事者秘密</strong><small>默认关闭，避免主 AI 意外泄露 NPC 私人计划</small></span><input type="checkbox" name="includeSecrets" ${settings.includeSecrets ? 'checked' : ''}><i></i></label></div></details>
-      <details class="lw-fold lw-settings-section lw-fold-open" data-fold-key="设置·外观与悬浮入口" open><summary><h3>外观与悬浮入口</h3></summary><div class="lw-fold-body"><div class="lw-field-grid"><label>面板主题<select name="theme"><option value="dark" ${settings.theme !== 'light' ? 'selected' : ''}>墨青深色</option><option value="light" ${settings.theme === 'light' ? 'selected' : ''}>纸墨浅色</option></select></label><label>悬浮按钮大小<input type="number" name="floatingSize" min="42" max="88" value="${settings.floatingSize}"><small>也可拖动悬浮球右下角调整</small></label></div><label class="lw-toggle-row"><span><strong>显示悬浮按钮</strong><small>关闭后仍可通过酒馆右上角菜单中的“万象世界引擎”打开</small></span><input type="checkbox" name="floatingButton" ${settings.floatingButton ? 'checked' : ''}><i></i></label></div></details>
+      <details class="lw-fold lw-settings-section lw-fold-open" data-fold-key="设置·外观与悬浮入口" open><summary><h3>外观与悬浮入口</h3></summary><div class="lw-fold-body"><div class="lw-field-grid"><label>面板主题<select name="theme"><option value="dark" ${settings.theme === 'dark' || !settings.theme ? 'selected' : ''}>墨青深色</option><option value="light" ${settings.theme === 'light' ? 'selected' : ''}>纸墨浅色</option><option value="glass" ${settings.theme === 'glass' ? 'selected' : ''}>液态玻璃（苹果拟态）</option></select></label><label>玻璃透明度<input type="number" name="glassOpacity" min="15" max="95" step="5" value="${Math.round((Number(settings.glassOpacity ?? 0.55)) * 100)}"><small>仅在液态玻璃主题下生效，数值越小越通透</small></label><label>地图绘制风格<select name="mapStyle"><option value="auto" ${!settings.mapStyle || settings.mapStyle === 'auto' ? 'selected' : ''}>自动（世界层深色，次级转极简制图）</option><option value="atlas" ${settings.mapStyle === 'atlas' ? 'selected' : ''}>极简制图（浅色 GIS 矢量）</option><option value="dark" ${settings.mapStyle === 'dark' ? 'selected' : ''}>深色星图</option></select></label><label>悬浮按钮大小<input type="number" name="floatingSize" min="42" max="88" value="${settings.floatingSize}"><small>也可拖动悬浮球右下角调整</small></label></div><label class="lw-toggle-row"><span><strong>显示悬浮按钮</strong><small>关闭后仍可通过酒馆右上角菜单中的“万象世界引擎”打开</small></span><input type="checkbox" name="floatingButton" ${settings.floatingButton ? 'checked' : ''}><i></i></label></div></details>
       <details class="lw-fold lw-settings-section lw-prompt-section" data-fold-key="设置·提示词与自定义预设"><summary><h3>提示词与自定义预设</h3></summary><div class="lw-fold-body"><div class="lw-preset-row"><label>世界预设<select name="promptPreset">${presetOptions.map((preset) => `<option value="${e(preset.id)}" ${settings.promptPreset === preset.id ? 'selected' : ''}>${e(preset.name)}</option>`).join('')}</select></label><button type="button" class="lw-button" data-lw-action="apply-prompt-preset">载入预设</button><button type="button" class="lw-button" data-lw-action="delete-prompt-preset">删除自定义预设</button></div><div class="lw-preset-save"><input name="newPromptPresetName" maxlength="60" placeholder="新预设名称"><button type="button" class="lw-button" data-lw-action="save-prompt-preset">${icon('plus')}将当前内容另存为预设</button></div><div class="lw-prompt-grid"><label>初始化提示词<textarea name="bootstrapPrompt" rows="4" maxlength="6000" placeholder="控制地图、人物、势力和题材如何生成">${e(settings.bootstrapPrompt)}</textarea></label><label>每轮推演提示词<textarea name="evolutionPrompt" rows="4" maxlength="6000" placeholder="控制 NPC 行动偏好、事件密度和世界演化方向">${e(settings.evolutionPrompt)}</textarea></label><label class="lw-prompt-wide">自定义破限词<textarea name="jailbreakPrompt" rows="3" maxlength="6000" placeholder="填写需要同时附加到初始化与推演请求的自定义创作指令">${e(settings.jailbreakPrompt)}</textarea></label></div><p class="lw-field-help">自定义预设保存初始化、推演和破限词三项内容，只发送给后台世界模型，不修改酒馆全局预设或聊天记录。</p></div></details>
-      <details class="lw-fold lw-settings-section" data-fold-key="设置·后台 API"><summary><h3>后台 API</h3></summary><div class="lw-fold-body"><div class="lw-segmented"><label><input type="radio" name="connectionMode" value="st" ${!custom ? 'checked' : ''}><span>酒馆当前连接</span></label><label><input type="radio" name="connectionMode" value="custom" ${custom ? 'checked' : ''}><span>独立兼容接口</span></label></div><div class="lw-custom-api ${custom ? '' : 'muted'}"><label>Base URL<input name="customBaseUrl" value="${e(settings.customBaseUrl)}" placeholder="https://provider.example/v1" autocomplete="off"></label><label>API Key<input type="password" name="customApiKey" value="${e(settings.customApiKey)}" placeholder="不会写入世界存档" autocomplete="off"></label><label>模型名<input name="customModel" list="lw-model-list" value="${e(settings.customModel)}" placeholder="model-name" autocomplete="off"></label><datalist id="lw-model-list"></datalist><div class="lw-custom-api-actions"><button type="button" class="lw-button" data-lw-action="fetch-models">${icon('refresh')}拉取模型列表</button><button type="button" class="lw-button" data-lw-action="test-api">${icon('check')}测试连接</button></div></div><p class="lw-field-help">Base URL 填到 /v1 或完整 /chat/completions。“拉取模型列表”会请求 /models 验证连通性并填入模型名下拉框；“测试连接”会真实生成一次 JSON 验证推演链路。酒馆连接模式使用 generateRaw 后台调用，模型跟随酒馆主 API。</p></div></details>
-      <details class="lw-fold lw-settings-section lw-focus-section" data-fold-key="设置·派系、风声与相关性注入"><summary><h3>派系、风声与相关性注入</h3></summary><div class="lw-fold-body"><label class="lw-toggle-row"><span><strong>让世界模型自造内部派系</strong><small>开启后每轮可依据角色卡与局势提出新的内部派系，而不是只用内置名单</small></span><input type="checkbox" name="aiClans" ${settings.aiClans !== false ? 'checked' : ''}><i></i></label><label class="lw-toggle-row"><span><strong>按正文焦点注入</strong><small>世界仍然全量运转，但只把玩家所在地区、正文提到的人与其势力注入主 API</small></span><input type="checkbox" name="focusInjection" ${settings.focusInjection !== false ? 'checked' : ''}><i></i></label><div class="lw-field-grid"><label>焦点人物上限<input type="number" name="focusNpcLimit" min="3" max="16" value="${settings.focusNpcLimit}"></label><label>焦点势力上限<input type="number" name="focusFactionLimit" min="2" max="10" value="${settings.focusFactionLimit}"></label></div><p class="lw-field-help">风声分四层：官方通告传得最快也最可信，区域消息基本出不了本地，小道消息真假难辨，密闻几乎不扩散。层级与传播范围由推演决定，也可以在世界编辑器里逐个修改。</p></div></details>
+      <details class="lw-fold lw-settings-section" data-fold-key="设置·后台 API"><summary><h3>后台 API</h3></summary><div class="lw-fold-body"><div class="lw-segmented"><label><input type="radio" name="connectionMode" value="st" ${!custom ? 'checked' : ''}><span>酒馆当前连接</span></label><label><input type="radio" name="connectionMode" value="custom" ${custom ? 'checked' : ''}><span>独立兼容接口</span></label></div><div class="lw-custom-api ${custom ? '' : 'muted'}"><label>Base URL<input name="customBaseUrl" value="${e(settings.customBaseUrl)}" placeholder="https://provider.example/v1" autocomplete="off"></label><label>API Key<input type="password" name="customApiKey" value="${e(settings.customApiKey)}" placeholder="不会写入世界存档" autocomplete="off"></label><label>模型名<input name="customModel" list="lw-model-list" value="${e(settings.customModel)}" placeholder="model-name" autocomplete="off"></label><datalist id="lw-model-list">${models.map((id) => `<option value="${e(id)}"></option>`).join('')}</datalist><div class="lw-model-picker" data-lw-model-picker><div class="lw-model-picker-head"><span>可选模型</span><em data-lw-model-count>${models.length ? `${models.length} 个` : '尚未拉取'}</em></div><div class="lw-model-picker-list" data-lw-model-list>${models.length ? models.map((id) => `<button type="button" class="lw-model-chip" data-lw-action="pick-model" data-model="${e(id)}">${e(id)}</button>`).join('') : '<small>点右侧“拉取模型列表”，结果会直接展开在下面，不会重载面板。</small>'}</div></div><div class="lw-custom-api-actions"><button type="button" class="lw-button" data-lw-action="fetch-models">${icon('refresh')}拉取模型列表</button><button type="button" class="lw-button" data-lw-action="test-api">${icon('check')}测试连接</button></div></div><p class="lw-field-help">Base URL 填到 /v1 或完整 /chat/completions。“拉取模型列表”会请求 /models 验证连通性并填入模型名下拉框；“测试连接”会真实生成一次 JSON 验证推演链路。酒馆连接模式使用 generateRaw 后台调用，模型跟随酒馆主 API。</p></div></details>
+      <details class="lw-fold lw-settings-section lw-focus-section" data-fold-key="设置·派系、风声与相关性注入"><summary><h3>派系、风声与相关性注入</h3></summary><div class="lw-fold-body"><label class="lw-toggle-row"><span><strong>让世界模型自造内部派系</strong><small>开启后每轮可依据角色卡与局势提出新的内部派系，而不是只用内置名单</small></span><input type="checkbox" name="aiClans" ${settings.aiClans !== false ? 'checked' : ''}><i></i></label><label class="lw-toggle-row"><span><strong>按正文焦点注入</strong><small>世界仍然全量运转，但只把玩家所在地区、正文提到的人与其势力注入主 API</small></span><input type="checkbox" name="focusInjection" ${settings.focusInjection !== false ? 'checked' : ''}><i></i></label><div class="lw-field-grid"><label>焦点人物上限<input type="number" name="focusNpcLimit" min="3" max="16" value="${settings.focusNpcLimit}"></label><label>焦点势力上限<input type="number" name="focusFactionLimit" min="2" max="10" value="${settings.focusFactionLimit}"></label></div><p class="lw-field-help">风声分四层：官方通告传得最快也最可信，区域消息基本出不了本地，小道消息真假难辨，密闻几乎不扩散。层级与传播范围由推演决定，也可以在事件面板里点开一则风声就地改写。</p></div></details>
       <details class="lw-fold lw-settings-section" data-fold-key="设置·日常、节令与存档压缩"><summary><h3>日常、节令与存档压缩</h3></summary><div class="lw-fold-body"><label class="lw-toggle-row"><span><strong>日常生活</strong><small>每轮让部分人物过自己的日子，产出不掷骰的生活细节</small></span><input type="checkbox" name="dailyLife" ${settings.dailyLife !== false ? 'checked' : ''}><i></i></label><div class="lw-field-grid"><label>每轮日常人物<input type="number" name="dailyActors" min="1" max="6" value="${settings.dailyActors}"></label><label>压缩间隔（成功推演次数）<input type="number" name="compressEvery" min="3" max="100" value="${settings.compressEvery}"><small>达到次数后把这段轮次压成一条纪要</small></label><label>一级合并为二级<input type="number" name="compressTier2Every" min="2" max="20" value="${settings.compressTier2Every}"><small>几条一级纪要合成一条辑要</small></label><label>二级合并为三级<input type="number" name="compressTier3Every" min="2" max="20" value="${settings.compressTier3Every}"><small>几条辑要合成一条纪年</small></label><label>未压缩保留轮次<input type="number" name="compressKeepRounds" min="0" max="40" value="${settings.compressKeepRounds}"><small>最近这些轮保持原样，保证细节不丢</small></label></div><label class="lw-toggle-row"><span><strong>启用存档压缩</strong><small>只用成功推演的轮次计数，重 roll 不会推动压缩</small></span><input type="checkbox" name="compressionEnabled" ${settings.compressionEnabled !== false ? 'checked' : ''}><i></i></label><label class="lw-toggle-row"><span><strong>节庆</strong><small>本地节日到日子会改变繁荣、动荡与物价</small></span><input type="checkbox" name="festivals" ${settings.festivals !== false ? 'checked' : ''}><i></i></label><label class="lw-prompt-wide">自定义节庆<textarea name="customFestivals" rows="3" maxlength="2000" placeholder="每行一个：名称|月-日|描述，例如&#10;灯河夜|7-15|全城放灯，河上挤满小船">${e(settings.customFestivals || '')}</textarea></label><p class="lw-field-help">节庆来源分三类：本地推演生成的、从角色卡世界书读到的、以及这里手写自定义的。压缩只处理已经写完的轮次，检查点与重 roll 逻辑不受影响。</p></div></details>
       <details class="lw-fold lw-settings-section" data-fold-key="设置·规模与上下文"><summary><h3>规模与上下文</h3></summary><div class="lw-fold-body"><div class="lw-field-grid"><label>核心 NPC 上限<input type="number" name="coreNpcLimit" min="1" max="400" value="${settings.coreNpcLimit}"></label><label>每轮简报人数<input type="number" name="briefNpcLimit" min="8" max="240" value="${settings.briefNpcLimit ?? 48}"></label><label>注入字符上限<input type="number" name="injectMaxChars" min="1000" max="30000" step="500" value="${settings.injectMaxChars}"></label><label>生成 Token 上限<input type="number" name="maxTokens" min="1000" max="64000" step="1000" value="${settings.maxTokens}"></label><label>请求超时（秒）<input type="number" name="requestTimeout" min="10" max="600" value="${settings.requestTimeout}"></label></div><p class="lw-field-help">核心 NPC 上限决定进入模拟的人物总数（最多 400）；每轮简报人数只决定这次推演请求里带多少份人物简报——正文提到的人与玩家同地的人优先，其余按轮次轮流进入，没被带上的角色仍由本地规则照常生活。因为注入只取与正文相关的地区与人物，核心层可以放心开大。</p></div></details>
       <details class="lw-fold lw-settings-section lw-inject-section" data-fold-key="设置·注入主 API 的方式"><summary><h3>注入主 API 的方式</h3></summary><div class="lw-fold-body"><div class="lw-field-grid"><label>注入深度（距最新消息条数）<input type="number" name="injectDepth" min="0" max="8" value="${settings.injectDepth}"></label><label class="lw-inline-check"><input type="checkbox" name="injectGuide" ${settings.injectGuide !== false ? 'checked' : ''}><span>附带「世界档案｜既定事实 + 写作要求」结构</span></label></div><label class="lw-prompt-wide">附加写作要求<textarea name="injectGuideText" rows="3" maxlength="2000" placeholder="例如：请在正文中体现势力之间的试探与暗流，但不要直接点明数字与派系名称">${e(settings.injectGuideText || '')}</textarea></label><p class="lw-field-help">结构开启时，注入内容会以 system 身份、用 &lt;living_world&gt; 标签包裹，并附带「当作既定事实写进正文、不复述数字」等写作要求；深度 0 表示紧贴本轮输入，主 API 最不容易忽略。若你的主模型仍然大量复述条目，把深度调到 0 并关闭「附带写作要求」试一次，再对比效果。</p></div></details>
-      <details class="lw-fold lw-settings-section" data-fold-key="设置·用户世界编辑器"><summary><h3>用户世界编辑器</h3></summary><div class="lw-fold-body"><details class="lw-world-editor" ${world ? '' : 'disabled'}><summary>直接修改当前世界 JSON</summary><p>可修改人物目标与位置、区域层级和天气、势力关系、事件进度、风声、玩家资金与声誉等全部内容。保存时会校验 ID、数值范围和地图连接。</p><textarea data-lw-world-editor spellcheck="false" rows="18" placeholder="初始化或导入世界后可编辑">${world ? e(JSON.stringify(world, null, 2)) : ''}</textarea><button type="button" class="lw-button lw-primary" data-lw-action="save-world-editor" ${world ? '' : 'disabled'}>${icon('check')}校验并保存世界修改</button></details></div></details>
-      <details class="lw-fold lw-settings-section" data-fold-key="设置·存档与维护"><summary><h3>存档与维护</h3></summary><div class="lw-fold-body"><div class="lw-settings-actions"><button type="button" class="lw-button" data-lw-action="export">${icon('download')}导出世界</button><button type="button" class="lw-button" data-lw-action="import">${icon('upload')}导入世界</button><button type="button" class="lw-button" data-lw-action="cancel-evolve">${icon('stop')}取消后台推演</button><button type="button" class="lw-button lw-danger-button" data-lw-action="reset">${icon('alert')}重建世界</button></div><p class="lw-field-help">世界按聊天保存；导出文件不包含 API Key。重建会清除当前聊天的世界与检查点。推演进行中可点击“取消后台推演”或面板顶部的停止按钮立即中止，本轮不会写入世界。</p></div></details>
+      <details class="lw-fold lw-settings-section" data-fold-key="设置·存档与维护"><summary><h3>存档与维护</h3></summary><div class="lw-fold-body"><div class="lw-settings-actions"><button type="button" class="lw-button" data-lw-action="export">${icon('download')}导出世界</button><button type="button" class="lw-button" data-lw-action="import">${icon('upload')}导入世界</button><button type="button" class="lw-button" data-lw-action="cancel-evolve">${icon('stop')}取消后台推演</button><button type="button" class="lw-button lw-danger-button" data-lw-action="reset">${icon('alert')}重建世界</button></div><p class="lw-field-help">世界按聊天保存，设置里不再有整段 JSON 编辑器。想改内容就在概览、生涯、地图侧栏、势力面板、事件与人物名片里直接点击带下划线的文字或数字：回车保存，Esc 取消，数值会自动限制在合理范围内，改完立刻生效并同步注入。导出文件不包含 API Key。重建会清除当前聊天的世界与检查点。推演进行中可点击“取消后台推演”或面板顶部的停止按钮立即中止，本轮不会写入世界。</p></div></details>
       <div class="lw-settings-footer"><button type="submit" class="lw-button lw-primary">${icon('check')}保存设置</button></div>
     </form>
   </section>`;
@@ -485,9 +597,9 @@ export function renderNpcInspector(world, npc) {
     const other = byId(world.npcs, id);
     return `<div><span>${e(other?.name || id)}</span><strong>${relation.trust > 0 ? '+' : ''}${relation.trust}</strong><small>信任</small></div>`;
   }).join('');
-  return `<div class="lw-inspector-content"><div class="lw-inspector-person"><span class="lw-avatar large" style="--faction-color:${e(faction?.color || '#6d8dff')}">${e(npc.name[0])}</span><div><span class="lw-kicker">PRIVATE DOSSIER</span><h2>${e(npc.name)}</h2><p>${e(npc.role)} · ${e(region?.name || '未知')}</p></div></div><p class="lw-inspector-description">${e(npc.description)}</p>
-    ${fold('目标与计划', `${npc.goals.map((goal) => `<div class="lw-goal-row"><span>${e(goal.description)}</span><b>优先级 ${goal.priority}</b>${meter(goal.progress)}</div>`).join('')}<div class="lw-current-plan"><small>当前私人计划 · 主持人可见</small><strong>${e(npc.plan?.goal || '尚未形成')}</strong><span>${e(npc.plan?.stage || '酝酿中')} ${npc.plan ? `${npc.plan.progress}/${npc.plan.requiredProgress}` : ''}</span></div>`, { open: true, key: `npc-goals-${npc.id}`, hint: `${npc.goals.length} 条` })}
-    ${fold('性格与需求', `<div class="lw-trait-grid">${Object.entries(npc.personality).map(([key, value]) => `<span><small>${e({ ambition: '野心', empathy: '共情', caution: '谨慎', loyalty: '忠诚' }[key] || key)}</small><b>${value}</b>${meter(value * 10)}</span>`).join('')}</div><div class="lw-needs-row"><span>安全 ${npc.needs.safety}/10</span><span>资源 ${npc.needs.wealth}/10</span><span>归属 ${npc.needs.belonging}/10</span></div>`, { open: false, key: `npc-traits-${npc.id}` })}
+  return `<div class="lw-inspector-content"><div class="lw-inspector-person"><span class="lw-avatar large" style="--faction-color:${e(faction?.color || '#6d8dff')}">${e(npc.name[0])}</span><div><span class="lw-kicker">PRIVATE DOSSIER</span><h2>${editable('npc', npc.id, 'name', e(npc.name), { label: '姓名' })}</h2><p>${editable('npc', npc.id, 'role', e(npc.role), { label: '身份' })} · ${e(region?.name || '未知')} · 情绪 ${editable('npc', npc.id, 'mood.label', e(npc.mood.label), { label: '情绪' })}</p></div></div><p class="lw-inspector-description">${editable('npc', npc.id, 'description', e(npc.description), { type: 'textarea', label: '人物描述' })}</p>
+    ${fold('目标与计划', `${npc.goals.map((goal, goalIndex) => `<div class="lw-goal-row"><span>${editable('npc', npc.id, `goals.${goalIndex}.description`, e(goal.description), { type: 'textarea', label: '目标' })}</span><b>优先级 ${editable('npc', npc.id, `goals.${goalIndex}.priority`, goal.priority, { type: 'number', value: goal.priority, label: '优先级' })}</b>${meter(goal.progress)}</div>`).join('')}<div class="lw-current-plan"><small>当前私人计划 · 主持人可见</small><strong>${e(npc.plan?.goal || '尚未形成')}</strong><span>${e(npc.plan?.stage || '酝酿中')} ${npc.plan ? `${npc.plan.progress}/${npc.plan.requiredProgress}` : ''}</span></div>`, { open: true, key: `npc-goals-${npc.id}`, hint: `${npc.goals.length} 条` })}
+    ${fold('性格与需求', `<div class="lw-trait-grid">${Object.entries(npc.personality).map(([key, value]) => `<span><small>${e({ ambition: '野心', empathy: '共情', caution: '谨慎', loyalty: '忠诚' }[key] || key)}</small><b>${value}</b>${meter(value * 10)}</span>`).join('')}</div><div class="lw-needs-row"><span>安全 ${editable('npc', npc.id, 'needs.safety', npc.needs.safety, { type: 'number', value: npc.needs.safety, label: '安全需求' })}/10</span><span>资源 ${editable('npc', npc.id, 'needs.wealth', npc.needs.wealth, { type: 'number', value: npc.needs.wealth, label: '资源需求' })}/10</span><span>归属 ${editable('npc', npc.id, 'needs.belonging', npc.needs.belonging, { type: 'number', value: npc.needs.belonging, label: '归属需求' })}/10</span></div>`, { open: false, key: `npc-traits-${npc.id}` })}
     ${fold('人物关系', `<div class="lw-relationship-grid">${relations || '<p>尚未建立重要私人关系。</p>'}</div>`, { open: true, key: `npc-relations-${npc.id}`, hint: `${Object.keys(npc.relationships).length} 人` })}
     ${fold('私人记忆', `<div class="lw-memory-list">${[...npc.memories].reverse().slice(0, 8).map((memory) => `<article><span>R${memory.round}</span><p>${e(memory.content)}</p></article>`).join('') || '<p>暂无私人记忆。</p>'}</div>`, { open: false, key: `npc-memories-${npc.id}`, hint: `${npc.memories.length} 条` })}
     ${fold('秘密', `<p class="lw-secret">${npc.secrets.map((secret) => e(secret)).join('<br>') || '没有已登记秘密'}</p>`, { open: false, key: `npc-secrets-${npc.id}`, hint: `${npc.secrets.length} 条` })}

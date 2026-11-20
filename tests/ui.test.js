@@ -156,3 +156,66 @@ test('悬浮球改为白色主题球，图标与手柄随尺寸等比缩放', as
   assert.ok(css.includes('.lw-floating-resize { width: 28%; height: 28%;'), '缩放手柄应随球体等比缩放');
   assert.ok(css.includes('.lw-floating-orbit { inset: -10%; }'), '光环应随球体等比缩放');
 });
+
+test('次级地图自动切换成极简单色制图，并可手动切回深色星图', () => {
+  const world = createDemoWorld();
+  const harbor = world.regions.find((region) => region.id === 'region_harbor');
+  const child = harbor.children[0];
+  const atlas = renderMap(world, child.id, {}, { regions: harbor.children, path: [harbor] }, 'auto');
+  assert.ok(atlas.includes('lw-map-canvas lw-zoomable lw-map-atlas'), '次级地图应使用极简制图');
+  assert.ok(atlas.includes('lw-atlas-fabric'), '应绘出街区肌理');
+  assert.ok(atlas.includes('lw-atlas-water') && atlas.includes('lw-atlas-bridge'), '应有水域与桥梁');
+  assert.ok(atlas.includes('data-lw-action="map-style"'), '应提供风格切换按钮');
+  assert.ok(atlas.includes('极简制图'));
+
+  const root = renderMap(world, world.regions[0].id, {}, {}, 'auto');
+  assert.ok(!root.includes('lw-map-atlas'), '世界层默认仍是深色星图');
+  assert.ok(root.includes('深色星图'));
+
+  const forced = renderMap(world, world.regions[0].id, {}, {}, 'atlas');
+  assert.ok(forced.includes('lw-map-atlas'), '可以强制任意层级用极简制图');
+});
+
+test('三张关系图的连线带颜色与粗细，不再是一律细线', () => {
+  const world = createDemoWorld();
+  const factions = renderFactions(world, world.factions[0].id, {});
+  assert.ok(/lw-relation-edge[\s\S]{0,240}stroke:#(4fd1a5|ef7568|9db2ac)/.test(factions), '势力连线应带色彩');
+  assert.ok(/stroke-width:\d+(\.\d+)?px/.test(factions), '势力连线应带粗细');
+
+  const a = world.npcs[0];
+  const b = world.npcs[1];
+  const link = { trust: -58, affection: -20, fear: 30, debt: 0 };
+  a.relationships = { [b.id]: link };
+  b.relationships = { [a.id]: link };
+  const people = renderPeopleGraph(world, a.id, '', {});
+  assert.ok(/lw-person-edge[\s\S]{0,240}stroke:#ef7568/.test(people), '敌意连线应是红色');
+  assert.ok(/stroke-width:(\d+\.)?\d+px/.test(people));
+
+  const map = renderMap(world, world.regions[0].id, {}, {});
+  assert.ok(/lw-map-route[\s\S]{0,200}style="stroke-width:/.test(map) || map.includes('lw-map-route'), '地图路线带分级粗细');
+});
+
+test('拉取到的模型就地展开成可选列表，不重载设置表单', () => {
+  const world = createDemoWorld();
+  const empty = renderSettings({ ...DEFAULT_SETTINGS, customPromptPresets: [] }, { message: '' }, world, []);
+  assert.ok(empty.includes('data-lw-model-list'), '应有模型列表容器');
+  assert.ok(empty.includes('尚未拉取'));
+  assert.ok(empty.includes('不会重载面板'), '应提示结果就地在下方展开');
+
+  const filled = renderSettings({ ...DEFAULT_SETTINGS, customPromptPresets: [] }, { message: '' }, world, ['gpt-4o', 'claude-3']);
+  assert.ok(filled.includes('data-lw-model-count>2 个'), '应显示模型数量');
+  assert.ok(filled.includes('data-lw-action="pick-model" data-model="gpt-4o"'), '模型应可点选');
+  assert.ok(filled.includes('<datalist id="lw-model-list"><option value="gpt-4o">'), '同时保留输入补全');
+});
+
+test('液态玻璃主题与地图风格都可选、可调', () => {
+  const world = createDemoWorld();
+  const html = renderSettings({ ...DEFAULT_SETTINGS, customPromptPresets: [], theme: 'glass' }, { message: '' }, world);
+  assert.ok(html.includes('<option value="glass" selected>液态玻璃（苹果拟态）</option>'), '主题里应有液态玻璃');
+  assert.ok(html.includes('name="glassOpacity" min="15" max="95"'), '透明度可调');
+  assert.ok(html.includes('name="mapStyle"'), '地图风格可配置');
+  assert.ok(html.includes('value="auto" selected'), '默认自动');
+  assert.equal(DEFAULT_SETTINGS.theme, 'dark', '玻璃主题是可选项，不强制');
+  assert.equal(DEFAULT_SETTINGS.glassOpacity, 0.55);
+  assert.equal(DEFAULT_SETTINGS.mapStyle, 'auto');
+});

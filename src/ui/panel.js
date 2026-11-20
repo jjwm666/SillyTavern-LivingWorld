@@ -1,5 +1,6 @@
 import { DEFAULT_SETTINGS, PROMPT_PRESETS } from '../engine/constants.js';
 import { byId, escapeHtml } from '../engine/utils.js';
+import { parseEditSpec } from '../engine/edits.js';
 import { icon } from './icons.js';
 import {
   MAP_MAX_SCALE, MAP_MIN_SCALE, normalizeMapView,
@@ -42,6 +43,9 @@ export class LivingWorldPanel {
     this.pointers = new Map();
     this.pinchGesture = null;
     this.folds = new Map();
+    this.inlineEdit = null;
+    this.models = [];
+    this.mapStyleMode = 'auto';
     this.root = null;
     this.opened = false;
     this.handleClick = this.handleClick.bind(this);
@@ -95,14 +99,15 @@ export class LivingWorldPanel {
     return this;
   }
 
-  setData({ world, settings, status } = {}) {
+  setData({ world, settings, status, rerender = true } = {}) {
     if (world !== undefined) this.world = world;
     if (settings) this.settings = { ...this.settings, ...settings };
     if (status) this.status = status;
     if (!this.selectedRegionId && this.world) this.selectedRegionId = this.world.player.regionId;
     if (!this.selectedFactionId && this.world) this.selectedFactionId = this.world.factions[0]?.id || null;
     this.applyAppearance();
-    this.render();
+    // rerender: false 用于拉取模型列表这类「不该重载表单」的场景
+    if (rerender) this.render();
   }
 
   setStatus(status) {
@@ -139,6 +144,7 @@ export class LivingWorldPanel {
 
   render() {
     if (!this.root) return;
+    this.cancelInlineEdit();
     this.renderHeader();
     const content = this.root.querySelector('#lw-content');
     if (!this.world && this.activeTab !== 'settings') {
@@ -147,16 +153,37 @@ export class LivingWorldPanel {
       switch (this.activeTab) {
         case 'player': content.innerHTML = renderPlayer(this.world); break;
         case 'people': content.innerHTML = renderPeople(this.world, this.peopleSearch, this.peopleMode, this.peopleFocusId, this.viewStates.people); break;
-        case 'map': content.innerHTML = renderMap(this.world, this.selectedRegionId, this.viewStates.map, this.getMapScope()); break;
+        case 'map': content.innerHTML = renderMap(this.world, this.selectedRegionId, this.viewStates.map, this.getMapScope(), this.mapStyleMode === 'auto' ? (this.settings.mapStyle || 'auto') : this.mapStyleMode); break;
         case 'factions': content.innerHTML = renderFactions(this.world, this.selectedFactionId, this.viewStates.factions); break;
         case 'events': content.innerHTML = renderEvents(this.world); break;
         case 'dice': content.innerHTML = renderDice(this.world, this.diceFilter); break;
-        case 'settings': content.innerHTML = renderSettings(this.settings, this.status, this.world); break;
+        case 'settings': content.innerHTML = renderSettings(this.settings, this.status, this.world, this.models); break;
         default: content.innerHTML = renderOverview(this.world);
       }
     }
     this.renderInspector();
     this.applyFoldState();
+  }
+
+  /** 拉取到的模型直接展开在输入框下方，不重载表单、不重置滚动位置。 */
+  applyModels() {
+    if (!this.root) return;
+    const models = Array.isArray(this.models) ? this.models : [];
+    const count = this.root.querySelector('[data-lw-model-count]');
+    if (count) count.textContent = models.length ? `${models.length} 个` : '尚未拉取';
+    const list = this.root.querySelector('[data-lw-model-list]');
+    if (list) {
+      list.innerHTML = models.length
+        ? models.map((id) => `<button type="button" class="lw-model-chip" data-lw-action="pick-model" data-model="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join('')
+        : '<small>没有可用的模型，检查 Base URL 与密钥后重试。</small>';
+      list.classList.add('is-fresh');
+      setTimeout(() => list.classList.remove('is-fresh'), 900);
+    }
+    const datalist = this.root.querySelector('#lw-model-list');
+    if (datalist) datalist.innerHTML = models.map((id) => `<option value="${escapeHtml(id)}"></option>`).join('');
+    const input = this.root.querySelector('[name="customModel"]');
+    if (input && !input.value.trim() && models.length) input.value = models[0];
+    list?.querySelector('.lw-model-chip')?.scrollIntoView?.({ block: 'nearest' });
   }
 
   /** 折叠状态存在面板实例上，重绘后按 key 还原，切页签也不会被重置。 */
@@ -190,7 +217,13 @@ export class LivingWorldPanel {
 
   applyAppearance() {
     if (!this.root) return;
-    this.root.dataset.theme = this.settings.theme === 'light' ? 'light' : 'dark';
+    const theme = ['light', 'glass'].includes(this.settings.theme) ? this.settings.theme : 'dark';
+    this.root.dataset.theme = theme;
+    const glass = Math.max(0.15, Math.min(0.95, Number(this.settings.glassOpacity) || 0.55));
+    this.root.style.setProperty('--lw-glass-alpha', glass.toFixed(2));
+    this.root.style.setProperty('--lw-glass-strong', Math.min(0.96, glass + 0.18).toFixed(2));
+    this.root.style.setProperty('--lw-glass-soft', Math.max(0.12, glass * 0.55).toFixed(2));
+    this.root.style.setProperty('--lw-glass-blur', `${Math.round(10 + glass * 26)}px`);
     this.root.classList.toggle('lw-floating-hidden', this.settings.floatingButton === false);
     const dock = this.root.querySelector('.lw-floating-dock');
     if (!dock) return;
@@ -235,6 +268,16 @@ export class LivingWorldPanel {
   }
 
   async handleClick(event) {
+    const editable = event.target.closest?.('[data-lw-edit]');
+    if (editable && this.root?.contains(editable)) {
+      event.preventDefault();
+      // 刚提交完的那一下点击会冒泡回来，不要把它当成“又要改一次”。
+      const settledAt = Number(editable.dataset.editSettled || 0);
+      if (settledAt && Date.now() - settledAt < 400) return;
+      this.beginInlineEdit(editable);
+      return;
+    }
+    this.cancelInlineEdit();
     const target = event.target.closest('[data-lw-action]');
     if (!target || !this.root.contains(target)) return;
     const action = target.dataset.lwAction;
@@ -342,11 +385,6 @@ export class LivingWorldPanel {
       await this.callbacks.onTogglePin?.(target.dataset.kind, target.dataset.id);
       return;
     }
-    if (action === 'save-world-editor') {
-      const raw = this.root.querySelector('[data-lw-world-editor]')?.value || '';
-      await this.callbacks.onEditWorld?.(raw);
-      return;
-    }
     if (action === 'faction-select') {
       this.selectedFactionId = target.dataset.id;
       this.render();
@@ -399,6 +437,24 @@ export class LivingWorldPanel {
       this.root.querySelector('#lw-import-file').click();
       return;
     }
+    if (action === 'pick-model') {
+      const model = target.dataset.model || '';
+      const input = this.root.querySelector('[name="customModel"]');
+      if (input && model) {
+        input.value = model;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        this.notify(`已选择模型 ${model}`, 'success');
+      }
+      return;
+    }
+    if (action === 'map-style') {
+      const current = this.mapStyleMode === 'auto' ? (this.settings.mapStyle || 'auto') : this.mapStyleMode;
+      const depth = (this.getMapScope().path || []).length;
+      const inAtlas = current === 'atlas' || (current !== 'dark' && depth > 0);
+      this.mapStyleMode = inAtlas ? 'dark' : 'atlas';
+      this.render();
+      return;
+    }
     if (action === 'fetch-models') {
       const form = this.root.querySelector('#lw-settings-form');
       const data = form ? new FormData(form) : new FormData();
@@ -408,10 +464,10 @@ export class LivingWorldPanel {
         customModel: String(data.get('customModel') || '').trim(),
       });
       if (Array.isArray(models) && models.length) {
-        const datalist = this.root.querySelector('#lw-model-list');
-        if (datalist) datalist.innerHTML = models.map((id) => `<option value="${escapeHtml(id)}"></option>`).join('');
-        const input = this.root.querySelector('[name="customModel"]');
-        if (input && !input.value.trim()) input.value = models[0];
+        this.models = models.slice();
+        this.applyModels();
+      } else {
+        this.notify('没有拿到模型列表，请检查 Base URL 与密钥', 'error');
       }
       return;
     }
@@ -479,6 +535,8 @@ export class LivingWorldPanel {
       injectDepth: Math.max(0, Math.min(8, Number(data.get('injectDepth')) || 0)),
       injectGuide: data.has('injectGuide'),
       injectGuideText: String(data.get('injectGuideText') || '').trim(),
+      glassOpacity: Math.max(0.15, Math.min(0.95, (Number(data.get('glassOpacity')) || 55) / 100)),
+      mapStyle: ['auto', 'atlas', 'dark'].includes(String(data.get('mapStyle'))) ? String(data.get('mapStyle')) : 'auto',
       aiClans: data.has('aiClans'),
       focusInjection: data.has('focusInjection'),
       focusNpcLimit: Math.max(3, Math.min(16, Number(data.get('focusNpcLimit')) || 8)),
@@ -776,8 +834,111 @@ export class LivingWorldPanel {
     await this.callbacks.onSettingsChange?.(settings);
   }
 
+  /** 点一下就改：把被点的文字原地换成输入框，回车/失焦保存，Esc 取消。 */
+  beginInlineEdit(node) {
+    const spec = parseEditSpec(node.dataset.lwEdit);
+    if (!spec) return;
+    if (node.classList.contains('is-editing')) {
+      node.querySelector('input, textarea')?.focus();
+      return;
+    }
+    this.cancelInlineEdit();
+    const multiline = spec.type === 'textarea';
+    const rawValue = node.dataset.lwValue ?? (node.textContent || '').trim();
+    const original = node.innerHTML;
+    const field = document.createElement(multiline ? 'textarea' : 'input');
+    field.className = 'lw-inline-input';
+    field.value = rawValue;
+    if (spec.type === 'number') {
+      field.type = 'number';
+      field.step = 'any';
+      field.inputMode = 'decimal';
+    } else {
+      field.type = 'text';
+    }
+    if (multiline) field.rows = 3;
+    node.classList.add('is-editing');
+    if (multiline) node.classList.add('is-multiline');
+    node.replaceChildren(field);
+    field.focus();
+    if (typeof field.select === 'function') field.select();
+
+    let settled = false;
+    const finish = async (commit) => {
+      if (settled) return;
+      settled = true;
+      node.dataset.editSettled = String(Date.now());
+      node.classList.remove('is-editing', 'is-multiline');
+      node.innerHTML = original;
+      if (this.inlineEdit?.node === node) this.inlineEdit = null;
+      if (!commit) return;
+      const value = spec.type === 'number' ? field.value : field.value.trim();
+      const accepted = await this.callbacks.onEditField?.({ ...spec, value });
+      if (accepted === false) {
+        this.notify('这次修改没有生效，已保留原值', 'error');
+        return;
+      }
+      this.notify(`${spec.type === 'number' ? '数值' : '内容'}已更新`, 'success');
+    };
+    this.inlineEdit = { node, finish };
+
+    field.addEventListener('pointerdown', (event) => event.stopPropagation());
+    field.addEventListener('click', (event) => event.stopPropagation());
+    field.addEventListener('keydown', (event) => {
+      event.stopPropagation();
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        finish(false);
+        return;
+      }
+      if (event.key === 'Enter' && (!multiline || event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        finish(true);
+      }
+    });
+    // 单行框失焦即保存；多行框留给“保存/取消”，避免点滚动条时误提交。
+    field.addEventListener('blur', () => { if (!multiline) finish(true); });
+
+    if (multiline) {
+      const actions = document.createElement('span');
+      actions.className = 'lw-inline-actions';
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'lw-inline-save';
+      save.textContent = '保存';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'lw-inline-cancel';
+      cancel.textContent = '取消';
+      save.addEventListener('pointerdown', (event) => event.stopPropagation());
+      cancel.addEventListener('pointerdown', (event) => event.stopPropagation());
+      save.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(true);
+      });
+      cancel.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(false);
+      });
+      actions.append(save, cancel);
+      node.append(actions);
+    }
+  }
+
+  cancelInlineEdit() {
+    if (this.inlineEdit) this.inlineEdit.finish(false);
+    this.inlineEdit = null;
+  }
+
   handleKeydown(event) {
     if (!this.root) return;
+    if ((event.key === 'Enter' || event.key === ' ') && event.target.matches?.('[data-lw-edit]')) {
+      event.preventDefault();
+      this.beginInlineEdit(event.target);
+      return;
+    }
     if (event.key === 'Escape' && this.opened) {
       if (this.selectedNpcId) {
         this.selectedNpcId = null;

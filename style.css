@@ -832,3 +832,295 @@
   box-shadow: 0 8px 24px rgba(31, 61, 54, .18), inset 0 1px 0 #ffffff;
 }
 #living-world-root[data-theme="light"] .lw-floating-status { border-color: #ffffff; }
+
+/* ========== 液态玻璃主题（可选，苹果拟态） ========== */
+#living-world-root[data-theme="glass"] {
+  --lw-bg: rgba(244, 248, 251, var(--lw-glass-strong, .72));
+  --lw-surface: rgba(255, 255, 255, var(--lw-glass-alpha, .55));
+  --lw-surface-2: rgba(255, 255, 255, var(--lw-glass-soft, .34));
+  --lw-surface-3: rgba(232, 241, 247, var(--lw-glass-soft, .44));
+  --lw-line: rgba(18, 40, 58, .10);
+  --lw-line-strong: rgba(18, 40, 58, .18);
+  --lw-text: #16202b;
+  --lw-muted: #4c5c69;
+  --lw-faint: #6d7c88;
+  --lw-teal: #0b7f74;
+  --lw-teal-dark: rgba(103, 216, 193, .2);
+  --lw-amber: #9a6b1f;
+  --lw-red: #b4473f;
+  --lw-blue: #2f66c8;
+  color-scheme: light;
+}
+#living-world-root[data-theme="glass"] .lw-backdrop {
+  background: rgba(24, 34, 44, .34);
+  backdrop-filter: blur(10px) saturate(1.2);
+}
+#living-world-root[data-theme="glass"] .lw-shell {
+  background: linear-gradient(155deg, rgba(255, 255, 255, .74), rgba(232, 242, 248, .5) 58%, rgba(255, 255, 255, .62));
+  border: 1px solid rgba(255, 255, 255, .72);
+  box-shadow: 0 24px 70px rgba(16, 34, 48, .32), inset 0 1px 0 rgba(255, 255, 255, .92);
+  backdrop-filter: blur(var(--lw-glass-blur, 24px)) saturate(1.8);
+}
+#living-world-root[data-theme="glass"] .lw-sidebar {
+  background: linear-gradient(180deg, rgba(255, 255, 255, .58), rgba(226, 238, 246, .42));
+  border-right: 1px solid rgba(255, 255, 255, .62);
+  backdrop-filter: blur(18px) saturate(1.5);
+}
+#living-world-root[data-theme="glass"] .lw-brand { border-bottom: 1px solid rgba(18, 40, 58, .08); }
+#living-world-root[data-theme="glass"] .lw-brand-mark { border-color: rgba(11, 127, 116, .35); color: #0b7f74; }
+#living-world-root[data-theme="glass"] .lw-nav button { color: #3f4f5b; }
+#living-world-root[data-theme="glass"] .lw-nav button.active {
+  background: rgba(255, 255, 255, .74);
+  color: #0d1620;
+  box-shadow: 0 4px 14px rgba(20, 40, 60, .1), inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+#living-world-root[data-theme="glass"] .lw-topbar {
+  background: rgba(255, 255, 255, .42);
+  border-bottom: 1px solid rgba(255, 255, 255, .6);
+  backdrop-filter: blur(14px) saturate(1.4);
+}
+#living-world-root[data-theme="glass"] :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  background: rgba(255, 255, 255, .68);
+  border: 1px solid rgba(18, 40, 58, .12);
+  color: #16202b;
+  border-radius: 10px;
+}
+#living-world-root[data-theme="glass"] :is(input, textarea)::placeholder { color: #93a0aa; }
+#living-world-root[data-theme="glass"] .lw-button {
+  background: rgba(255, 255, 255, .62);
+  border: 1px solid rgba(255, 255, 255, .82);
+  color: #16202b;
+  box-shadow: 0 4px 12px rgba(20, 40, 60, .08), inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+#living-world-root[data-theme="glass"] .lw-button.lw-primary {
+  background: linear-gradient(140deg, #2fb6a6, #0b7f74);
+  border-color: rgba(255, 255, 255, .45);
+  color: #fff;
+  box-shadow: 0 8px 20px rgba(11, 127, 116, .28);
+}
+#living-world-root[data-theme="glass"] .lw-icon-button {
+  background: rgba(255, 255, 255, .66);
+  border: 1px solid rgba(255, 255, 255, .8);
+  color: #2c3b47;
+}
+#living-world-root[data-theme="glass"] :is(.lw-stat, .lw-event-mini, .lw-event-card, .lw-person-card, .lw-dice-row, .lw-rumor-card, .lw-region-row, .lw-price-row, .lw-relation-row, .lw-clan-row, .lw-faction-relation, .lw-goal-row, .lw-hook-npc, .lw-hook-complication, .lw-hook-opportunity, .lw-timeline-item, .lw-empty, .lw-country-card, .lw-ledger-row) {
+  background: rgba(255, 255, 255, .52);
+  border: 1px solid rgba(255, 255, 255, .72);
+  border-radius: 14px;
+  box-shadow: 0 6px 18px rgba(20, 40, 60, .06), inset 0 1px 0 rgba(255, 255, 255, .88);
+  backdrop-filter: blur(12px) saturate(1.35);
+}
+#living-world-root[data-theme="glass"] .lw-world-brief {
+  background: linear-gradient(130deg, rgba(255, 255, 255, .74), rgba(214, 235, 245, .58));
+  border-color: rgba(255, 255, 255, .82);
+  backdrop-filter: blur(14px) saturate(1.4);
+  box-shadow: 0 10px 30px rgba(20, 40, 60, .1);
+}
+#living-world-root[data-theme="glass"] .lw-brief-copy h2 { color: #0f1d27; }
+#living-world-root[data-theme="glass"] .lw-map-canvas {
+  background: radial-gradient(circle at 50% 38%, #f6fafb, #e7eef1 78%);
+  border: 1px solid rgba(255, 255, 255, .72);
+}
+#living-world-root[data-theme="glass"] .lw-map-node-label { fill: #34424c; }
+#living-world-root[data-theme="glass"] .lw-map-legend { background: rgba(255, 255, 255, .8); border: 1px solid rgba(18, 40, 58, .1); color: #5c6b76; }
+#living-world-root[data-theme="glass"] .lw-fold { background: rgba(255, 255, 255, .42); }
+#living-world-root[data-theme="glass"] .lw-fold > summary { color: #22313c; }
+#living-world-root[data-theme="glass"] .lw-inspector { background: rgba(255, 255, 255, .5); backdrop-filter: blur(16px); }
+#living-world-root[data-theme="glass"] .lw-floating { --lw-float-ring: rgba(18, 40, 58, .12); }
+
+/* ========== 极简单色制图（次级 / 次次级地图） ========== */
+.lw-map-canvas.lw-map-atlas {
+  background: #fcfcfb;
+  border-color: rgba(45, 62, 55, .16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .8);
+}
+.lw-map-atlas .lw-map-grid { opacity: 0; }
+.lw-atlas-fabric { pointer-events: none; }
+.lw-atlas-water { fill: none; stroke: #dee8ee; stroke-width: 52; stroke-linecap: round; }
+.lw-atlas-bank { fill: none; stroke: #c4d5de; stroke-width: 1.1; }
+.lw-atlas-canal { fill: none; stroke: #d8e5eb; stroke-width: 5; stroke-linecap: round; }
+.lw-atlas-block { fill: #f4f4ef; stroke: #e4e4dc; stroke-width: .4; }
+.lw-atlas-road-main { stroke: #d8d8d0; stroke-width: 2.6; }
+.lw-atlas-road { stroke: #e5e5dd; stroke-width: 1.15; }
+.lw-atlas-alley { stroke: #efefe8; stroke-width: .6; }
+.lw-atlas-bridge { stroke: #c8c3b7; stroke-width: 3; stroke-linecap: round; }
+.lw-map-atlas .lw-map-route { stroke: #aeb8ab; stroke-dasharray: 3 4; }
+.lw-map-atlas .lw-map-route.highlighted { stroke: #8a6c34; stroke-dasharray: none; }
+.lw-map-atlas .lw-map-node-halo { fill: rgba(88, 116, 104, .1); }
+.lw-map-atlas .lw-map-node-core { stroke: #ffffff; stroke-width: 2; }
+.lw-map-atlas .lw-map-node-symbol { fill: #ffffff; }
+.lw-map-atlas .lw-map-node-label { fill: #46524a; letter-spacing: .04em; }
+.lw-map-atlas .lw-map-node-meta { fill: #98a199; }
+.lw-map-atlas .lw-map-node-children { fill: #6d786e; }
+.lw-map-atlas .lw-map-legend {
+  background: rgba(255, 255, 255, .88);
+  border: 1px solid #e6e6de;
+  color: #7a837a;
+  backdrop-filter: blur(6px);
+}
+.lw-map-atlas .lw-map-hint { color: #8b948b; }
+.lw-map-style-button {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--lw-line);
+  border-radius: 999px;
+  background: var(--lw-surface-2);
+  color: var(--lw-muted);
+  font-size: 10px;
+  letter-spacing: .06em;
+  cursor: pointer;
+}
+.lw-map-style-button:hover { border-color: var(--lw-teal); color: var(--lw-teal); }
+
+/* ========== 关系连线：更鲜明的颜色与更清晰的粗细 ========== */
+.lw-relation-edge, .lw-person-edge { stroke-linecap: round; }
+.lw-graph-legend span.positive::before,
+.lw-graph-legend span.warm::before { background: #4fd1a5; }
+.lw-graph-legend span.negative::before,
+.lw-graph-legend span.hostile::before { background: #ef7568; }
+.lw-graph-legend span.neutral::before { background: #9db2ac; }
+
+/* ========== 模型列表（拉取后就地展开，不重载面板） ========== */
+.lw-model-picker {
+  margin-top: 10px;
+  border: 1px solid var(--lw-line);
+  border-radius: 11px;
+  background: var(--lw-surface-2);
+  overflow: hidden;
+}
+.lw-model-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--lw-line);
+  color: var(--lw-muted);
+  font-size: 10px;
+  letter-spacing: .12em;
+}
+.lw-model-picker-head em { font-style: normal; color: var(--lw-faint); }
+.lw-model-picker-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px;
+  max-height: 170px;
+  overflow: auto;
+}
+.lw-model-picker-list small { color: var(--lw-faint); font-size: 10px; line-height: 1.6; }
+.lw-model-picker-list.is-fresh { animation: lw-model-flash .9s ease; }
+.lw-model-chip {
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid var(--lw-line-strong);
+  border-radius: 999px;
+  background: var(--lw-surface);
+  color: var(--lw-text);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: .15s;
+}
+.lw-model-chip:hover, .lw-model-chip:focus-visible { border-color: var(--lw-teal); color: var(--lw-teal); transform: translateY(-1px); }
+@keyframes lw-model-flash {
+  from { background: rgba(103, 216, 193, .22); }
+  to { background: transparent; }
+}
+
+#living-world-root[data-theme="glass"] .lw-map-canvas.lw-map-atlas { background: #fcfcfb; }
+.lw-graph-legend span.warm { color: #4fd1a5; }
+.lw-graph-legend span.hostile { color: #ef7568; }
+
+/* ── 就地修改：看见的文字与数字，点一下就能改 ── */
+.lw-editable {
+  display: inline-block;
+  border-bottom: 1px dashed rgba(125, 205, 183, .45);
+  border-radius: 3px;
+  padding: 0 2px;
+  cursor: text;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+
+.lw-editable:hover {
+  background: rgba(125, 205, 183, .14);
+  border-color: rgba(125, 205, 183, .85);
+}
+
+.lw-editable:focus-visible {
+  outline: 2px solid rgba(125, 205, 183, .55);
+  outline-offset: 1px;
+}
+
+.lw-editable.is-editing {
+  display: block;
+  padding: 0;
+  border-bottom: 0;
+}
+
+.lw-inline-input {
+  width: 100%;
+  min-width: 4ch;
+  font: inherit;
+  color: inherit;
+  background: var(--lw-surface-3);
+  border: 1px solid var(--lw-teal);
+  border-radius: 6px;
+  padding: 2px 6px;
+  box-sizing: border-box;
+}
+
+.lw-inline-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(125, 205, 183, .28);
+}
+
+input.lw-inline-input { max-width: 10ch; }
+
+.lw-editable.is-multiline .lw-inline-input {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.lw-inline-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.lw-inline-save,
+.lw-inline-cancel {
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--lw-line-strong);
+  background: var(--lw-surface-2);
+  color: var(--lw-text);
+  cursor: pointer;
+}
+
+.lw-inline-save { border-color: var(--lw-teal); color: var(--lw-teal); }
+.lw-inline-save:hover { background: rgba(125, 205, 183, .16); }
+.lw-inline-cancel:hover { background: var(--lw-surface-3); }
+
+.lw-detail-stats .lw-editable,
+.lw-region-prosperity .lw-editable,
+.lw-needs-row .lw-editable { white-space: nowrap; }
+
+#living-world-root[data-theme="light"] .lw-editable {
+  border-bottom-color: rgba(38, 96, 84, .35);
+}
+#living-world-root[data-theme="light"] .lw-editable:hover {
+  background: rgba(38, 96, 84, .10);
+  border-color: rgba(38, 96, 84, .7);
+}
+#living-world-root[data-theme="glass"] .lw-inline-input {
+  background: rgba(255, 255, 255, .18);
+  border-color: rgba(255, 255, 255, .55);
+}

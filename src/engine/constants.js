@@ -58,6 +58,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   evolutionPrompt: '',
   jailbreakPrompt: '',
   theme: 'dark',
+  glassOpacity: 0.55,
+  mapStyle: 'auto',
   floatingButton: true,
   floatingSize: 58,
   floatingX: null,

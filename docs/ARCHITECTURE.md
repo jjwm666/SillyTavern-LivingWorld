@@ -141,6 +141,27 @@ Living World 将一次聊天轮次视为一次世界推演机会。系统必须�
 - 双击：复位到 `{ scale: 1, x: 0, y: 0 }`；`view-zoom-in/out/reset` 按钮走同一条 `setViewScale` 路径。
 - 人物关系图点节点只改变「中心人物」（`peopleFocusId`），打开名片走侧栏的「人物名片」按钮，所以点击不会突然跳走。
 
+## 界面主题与地图风格
+
+面板根节点用 `data-theme` 切换观感，取值 `dark` / `light` / `glass`。
+
+- `glass`（液态玻璃）由三组 CSS 变量驱动：`--lw-glass-alpha`（用户设置的透明度，15%–95%）、`--lw-glass-strong`（alpha + 0.18，用于外壳与底色）、`--lw-glass-soft`（alpha × 0.55，用于次级表面），模糊半径 `--lw-glass-blur` 由 alpha 推导（10–35px）。`LivingWorldPanel.applyAppearance()` 负责把这三个数值写到根节点；所有半透明表面都读这几个变量，因此拖动一次设置就能整体变透/变实。
+- 玻璃主题只做视觉覆盖，不改布局、不改折叠与视口逻辑；默认主题仍是 `dark`。
+
+地图风格 `settings.mapStyle`：`auto` / `atlas` / `dark`。
+
+- `auto` 在世界层用深色星图，`scope.path.length > 0`（次级及更深）时用 `atlas`。
+- `atlas` 的底图由 `views.js` 的 `cityFabric(seedText, depth)` 生成：用 `mulberry32(hashNumber('atlas:' + seed))` 播种，画水系、运河、街区矩形、分级道路、巷弄与桥梁；同一区域每次渲染结果完全一致。层级越深 `detail` 越高，街区越细。
+- 面包屑右侧的 `data-lw-action="map-style"` 按钮临时切换风格（`panel.mapStyleMode`），不写回设置。
+
+## 关系连线的表达
+
+三张图的连线都用内联 `style` 指定 `stroke` 与 `stroke-width`（class 只保留虚线与图例语义，避免主题 CSS 覆盖宽度）：
+
+- 势力关系：强度 = |关系值| + 张力 × 0.6，宽度 `1.5 + 强度 / 16`；合作 `#4fd1a5`、冲突 `#ef7568`、中立 `#9db2ac`；|关系值| ≥ 35 时追加一层 `stroke-opacity: 0.14` 的加粗光晕。
+- 人物关系：宽度 `1.4 + |信任| / 14`，按温暖 / 敌意 / 中性着色，焦点连线不透明度 0.95。
+- 地图路线：按距离 `1.8–4.6`（制图风）/ `2.4–5.2`（星图）分级。
+
 ## 折叠区块（`<details class="lw-fold">`）
 
 数值密集或次要的内容统一用 `fold(title, body, { open, hint, key })` 渲染成 `<details class="lw-fold" data-fold-key="…">`：摘要行给出标题与关键数字，展开后才是明细。已经折叠的视图包括概览四块、生涯四块、地图侧栏、事件与风声、骰点说明与列表、设置页每一节、人物名片的每一块。
@@ -149,6 +170,15 @@ Living World 将一次聊天轮次视为一次世界推演机会。系统必须�
 - `panel.handleFoldToggle` 用捕获阶段监听 `toggle` 事件写回状态（`toggle` 不冒泡，捕获阶段可以接到）。
 - 折叠标题里的按钮（「推进一轮」「打开地图」等）会 `preventDefault()`，避免点击按钮同时收起面板。
 - 设置页的表单字段即使处在收起的 `<details>` 里仍然参与 `FormData` 提交（未加 `disabled`），因此收起不会影响保存。
+
+## 就地修改（点一下就能改）
+
+设置页曾有一个「用户世界编辑器」，把整个世界序列化成 JSON 让人手改；字段一多就没法用，也容易改坏。现在改成「在哪看见就点哪里改」。
+
+- 视图侧：`views.js` 的 `editable(kind, id, path, text, { type, value, label })` 输出 `<span class="lw-editable" data-lw-edit="kind:id:path:type" data-lw-value="…">`。`type` 为 `number` / `text` / `textarea`；`value` 用于显示被格式化过的数字（如 `1,200`），编辑框里拿到的是原始值。
+- 面板侧：`panel.handleClick` 最先检查 `[data-lw-edit]`（先于 `[data-lw-action]`，因此可以安全地放在按钮内部），`beginInlineEdit` 把节点内容原地换成 `<input>` / `<textarea>`；回车保存（多行用 ⌘/Ctrl+Enter）、Esc 取消、单行失焦即保存、多行有「保存 / 取消」。提交后节点会带上 `data-edit-settled` 时间戳，避免冒泡回来的同一次点击又打开编辑器；`render()` 开头统一 `cancelInlineEdit()`。
+- 引擎侧：`src/engine/edits.js` 是唯一写入入口。`parseEditSpec` 解析四段式描述，`resolveEditTarget` 按 kind（`world` / `player` / `region` / `npc` / `faction` / `clan` / `event` / `rumor`）取对象，区域用递归查找所以次级、再次级区域同样可改；`coerceEditValue` 按 `EDIT_LIMITS` 夹取数值（繁荣 0–100、动荡 0–100、物价 20–400、天气强度 0–3、权威 0–100、三项资源 0–100、人心/势力 0–100、优先级 1–5、声誉 −100–100 等），文字去掉多余空白并截断到 600 字，空值与非法数字直接返回错误。路径支持数组下标（`goals.0.description`）。
+- 写回后：`applyWorldEdit` 会为势力与内部派系调用 `refreshFactionDerived`，因此改权威、人心、势力会立即反映到稳定度、团结度与暗涌；`index.editWorldField` 再走 `normalizeWorld` → `store.save` → `refreshInjection` → `panel.setData`，改完即存盘、即生效、即进入下一轮注入。失败时不写档案，面板提示「已保留原值」。
 
 ## 安全
 

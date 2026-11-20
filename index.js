@@ -2,6 +2,7 @@ import { CHECKPOINT_KEY, DEFAULT_SETTINGS, SETTINGS_KEY, PROMPT_KEY } from './sr
 import { buildBootstrapPrompt, buildEvolutionPrompt } from './src/engine/director.js';
 import { createWorldFromBootstrap, normalizeWorld, addLog } from './src/engine/state.js';
 import { isNewerThanSupported, migrateWorld } from './src/engine/migrations.js';
+import { applyWorldEdit } from './src/engine/edits.js';
 import { evolveWorld } from './src/engine/simulation.js';
 import { deepClone, downloadJson, hashString, safeJsonParse } from './src/engine/utils.js';
 import { WorldAPI } from './src/integration/api.js';
@@ -52,6 +53,7 @@ class LivingWorldController {
       onExport: () => this.exportWorld(),
       onImport: (raw) => this.importWorld(raw),
       onEditWorld: (raw) => this.editWorld(raw),
+      onEditField: (payload) => this.editWorldField(payload),
       onTogglePin: (kind, id) => this.togglePinned(kind, id),
       onReset: () => this.resetWorld(),
       onTestApi: () => this.testApi(),
@@ -150,7 +152,8 @@ class LivingWorldController {
     if (patch && typeof patch === 'object') {
       Object.assign(this.getSettings(), patch);
       await this.context().saveSettingsDebounced?.();
-      this.panel.setData({ settings: this.getSettings() });
+      // 不重绘：重绘会丢掉刚填的表单和滚动位置，看起来像整页刷新
+      this.panel.setData({ settings: this.getSettings(), rerender: false });
     }
     this.setStatus('running', '正在拉取模型列表');
     try {
@@ -378,6 +381,28 @@ class LivingWorldController {
     this.panel.setData({ world: this.world, settings: this.getSettings(), status: { kind: this.status.kind, message: '设置已保存' } });
     this.refreshInjection();
     this.panel.notify('设置已保存', 'success');
+  }
+
+  /** 就地修改的唯一落点：校验 → 写入 → 归一化 → 存档 → 重新注入。 */
+  async editWorldField(payload) {
+    if (!this.world) {
+      this.panel.notify('当前还没有世界可以修改', 'error');
+      return false;
+    }
+    const result = applyWorldEdit(this.world, payload);
+    if (!result.ok) {
+      this.panel.notify(result.error || '这次修改没有生效', 'error');
+      return false;
+    }
+    this.world = normalizeWorld(this.world);
+    await this.store.save(this.world);
+    this.refreshInjection();
+    this.panel.setData({
+      world: this.world,
+      settings: this.getSettings(),
+      status: { kind: this.status.kind, message: `${result.label || '内容'}已更新` },
+    });
+    return true;
   }
 
   async exportWorld() {
