@@ -1124,3 +1124,25 @@ input.lw-inline-input { max-width: 10ch; }
   background: rgba(255, 255, 255, .18);
   border-color: rgba(255, 255, 255, .55);
 }
+
+.lw-field-grid label.lw-dimmed {
+  opacity: .45;
+}
+
+.lw-field-grid label.lw-dimmed input {
+  pointer-events: none;
+}
+
+/* 液态玻璃：表单控件与折叠块在浅底上也要有玻璃质感 */
+#living-world-root[data-theme="glass"] .lw-zoomable,
+#living-world-root[data-theme="glass"] .lw-people-graph-canvas {
+  background: rgba(255, 255, 255, var(--lw-glass-soft, .34));
+  border: 1px solid rgba(18, 40, 58, .1);
+  backdrop-filter: blur(12px);
+}
+
+#living-world-root[data-theme="glass"] .lw-chronicle-strip {
+  background: rgba(255, 255, 255, var(--lw-glass-soft, .34));
+  border: 1px solid rgba(18, 40, 58, .08);
+  color: #3f4f5b;
+}

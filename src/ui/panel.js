@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, PROMPT_PRESETS } from '../engine/constants.js';
+import { DEFAULT_SETTINGS, PROMPT_PRESETS, normalizeTheme } from '../engine/constants.js';
 import { byId, escapeHtml } from '../engine/utils.js';
 import { parseEditSpec } from '../engine/edits.js';
 import { icon } from './icons.js';
@@ -217,7 +217,7 @@ export class LivingWorldPanel {
 
   applyAppearance() {
     if (!this.root) return;
-    const theme = ['light', 'glass'].includes(this.settings.theme) ? this.settings.theme : 'dark';
+    const theme = normalizeTheme(this.settings.theme);
     this.root.dataset.theme = theme;
     const glass = Math.max(0.15, Math.min(0.95, Number(this.settings.glassOpacity) || 0.55));
     this.root.style.setProperty('--lw-glass-alpha', glass.toFixed(2));
@@ -506,6 +506,13 @@ export class LivingWorldPanel {
     if (event.target.name === 'connectionMode') {
       this.root.querySelector('.lw-custom-api')?.classList.toggle('muted', event.target.value !== 'custom');
     }
+    if (event.target.name === 'theme') {
+      // 选完立刻预览，不用等保存；保存时仍以表单值为准
+      this.settings = { ...this.settings, theme: normalizeTheme(event.target.value) };
+      this.applyAppearance();
+      const field = this.root.querySelector('[name="glassOpacity"]');
+      if (field) field.closest('label')?.classList.toggle('lw-dimmed', this.settings.theme !== 'glass');
+    }
   }
 
   async handleSubmit(event) {
@@ -520,7 +527,7 @@ export class LivingWorldPanel {
       autoEvolve: data.has('autoEvolve'),
       evolutionInterval: Math.max(1, Math.min(20, Number(data.get('evolutionInterval')) || 1)),
       diceModifier: Math.max(-10, Math.min(10, Number(data.get('diceModifier')) || 0)),
-      theme: data.get('theme') === 'light' ? 'light' : 'dark',
+      theme: normalizeTheme(data.get('theme')),
       floatingButton: data.has('floatingButton'),
       floatingSize: Math.max(42, Math.min(88, Number(data.get('floatingSize')) || 58)),
       autoBootstrap: data.has('autoBootstrap'),

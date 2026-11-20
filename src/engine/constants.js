@@ -88,6 +88,21 @@ export const DEFAULT_SETTINGS = Object.freeze({
   customFestivals: '',
 });
 
+// 面板主题：任何来源（设置页、旧存档、被改坏的配置）都先过一遍这里，
+// 以免玻璃主题在保存时被误判成深色。
+export const THEME_IDS = Object.freeze(['dark', 'light', 'glass']);
+
+export const THEME_LABELS = Object.freeze({
+  dark: '墨青深色',
+  light: '纸墨浅色',
+  glass: '液态玻璃（苹果拟态）',
+});
+
+export function normalizeTheme(value) {
+  const id = String(value ?? '').trim();
+  return THEME_IDS.includes(id) ? id : 'dark';
+}
+
 export const NPC_ACTIONS = Object.freeze([
   'pursue_goal', 'travel', 'investigate', 'trade', 'aid', 'scheme',
   'recruit', 'confront', 'spread_rumor', 'rest', 'seek_player',

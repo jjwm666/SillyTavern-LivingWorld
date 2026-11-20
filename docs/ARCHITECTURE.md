@@ -147,6 +147,7 @@ Living World 将一次聊天轮次视为一次世界推演机会。系统必须�
 
 - `glass`（液态玻璃）由三组 CSS 变量驱动：`--lw-glass-alpha`（用户设置的透明度，15%–95%）、`--lw-glass-strong`（alpha + 0.18，用于外壳与底色）、`--lw-glass-soft`（alpha × 0.55，用于次级表面），模糊半径 `--lw-glass-blur` 由 alpha 推导（10–35px）。`LivingWorldPanel.applyAppearance()` 负责把这三个数值写到根节点；所有半透明表面都读这几个变量，因此拖动一次设置就能整体变透/变实。
 - 玻璃主题只做视觉覆盖，不改布局、不改折叠与视口逻辑；默认主题仍是 `dark`。
+- 主题取值必须统一走 `normalizeTheme()`（`src/engine/constants.js`，白名单 `THEME_IDS`）：设置页下拉由 `THEME_LABELS` 生成，保存设置与 `applyAppearance()` 都调用它。历史教训——只在保存处写 `theme === 'light' ? 'light' : 'dark'` 会把 `glass` 静默降级成深色，表现为「选了玻璃主题、保存后没反应」。
 
 地图风格 `settings.mapStyle`：`auto` / `atlas` / `dark`。
 

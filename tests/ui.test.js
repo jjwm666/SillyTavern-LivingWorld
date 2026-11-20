@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
-import { DEFAULT_SETTINGS, FACTION_TIERS } from '../src/engine/constants.js';
+import { DEFAULT_SETTINGS, FACTION_TIERS, THEME_IDS, THEME_LABELS, normalizeTheme } from '../src/engine/constants.js';
 import { clanStance, clanStanding } from '../src/engine/factions.js';
 import { factionTierLabel } from '../src/engine/state.js';
 import { createDemoWorld } from '../src/engine/demo-world.js';
@@ -218,4 +219,24 @@ test('液态玻璃主题与地图风格都可选、可调', () => {
   assert.equal(DEFAULT_SETTINGS.theme, 'dark', '玻璃主题是可选项，不强制');
   assert.equal(DEFAULT_SETTINGS.glassOpacity, 0.55);
   assert.equal(DEFAULT_SETTINGS.mapStyle, 'auto');
+});
+
+test('保存设置时玻璃主题不会被降级成深色', () => {
+  assert.equal(normalizeTheme('glass'), 'glass', 'normalizeTheme 必须保留 glass');
+  assert.equal(normalizeTheme('light'), 'light');
+  assert.equal(normalizeTheme('dark'), 'dark');
+  assert.equal(normalizeTheme('液态玻璃'), 'dark', '无法识别的值回落到深色');
+  assert.equal(normalizeTheme(undefined), 'dark');
+  assert.deepEqual([...THEME_IDS], ['dark', 'light', 'glass']);
+  assert.equal(THEME_LABELS.glass, '液态玻璃（苹果拟态）');
+
+  const html = renderSettings({ ...DEFAULT_SETTINGS, customPromptPresets: [], theme: 'glass' }, { message: '' }, createDemoWorld());
+  assert.ok(html.includes('<option value="glass" selected>'), '玻璃主题在设置页应为选中态');
+  assert.ok(!html.includes('<option value="dark" selected>'), '选中玻璃时深色不应同时选中');
+
+  // 面板保存路径必须走同一个归一函数，否则选了玻璃、保存后又变回深色
+  const panel = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  assert.ok(panel.includes("theme: normalizeTheme(data.get('theme'))"), '保存设置时应使用 normalizeTheme');
+  assert.ok(!panel.includes("data.get('theme') === 'light' ? 'light' : 'dark'"), '不应再手工把主题夹成 dark/light');
+  assert.ok(panel.includes('normalizeTheme(this.settings.theme)'), '应用外观时同样走 normalizeTheme');
 });
