@@ -860,7 +860,7 @@ export function renderLore(world, settings = {}, catalog = { books: [] }, status
           <div class="lw-lore-side-card">
             <span class="lw-kicker">HOW IT FLOWS</span>
             <h3>这些内容怎么进正文</h3>
-            <p>世界书按条目勾选后进入「世界书要点」，日常与节庆进入「节令与日常」与写作要求，由主 API 在正文里自然体现。</p>
+            <p>勾选的世界书条目只在初始化世界（后台 API）时作为设定参考，不会再重复注入主 API——正文里的世界书由酒馆自己按关键词注入。日常与节庆的提示词则会进入写作要求，让主 API 把日子写成日子。</p>
             <p class="lw-muted">上一轮状态：${e(status?.message || '待命')}</p>
           </div>
         </aside>

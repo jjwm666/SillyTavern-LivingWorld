@@ -197,7 +197,6 @@ class LivingWorldController {
       focusInjection: settings.focusInjection !== false,
       focusNpcLimit: settings.focusNpcLimit,
       focusFactionLimit: settings.focusFactionLimit,
-      loreDigest: this.loreDigest(2600),
       dailyPrompt: settings.dailyPrompt,
       festivalPrompt: settings.festivalPrompt,
     }) : '';

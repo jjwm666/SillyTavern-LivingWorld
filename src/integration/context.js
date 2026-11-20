@@ -403,7 +403,6 @@ export function buildWorldContext(state, options = {}) {
 
   sections.push(section('当地风声', rumorLines(state, focus)));
 
-  if (options.loreDigest) sections.push(section('世界书要点', String(options.loreDigest).split('\n').slice(0, 24)));
 
   sections.push(section('节令与日常', dailyLines(state, options)));
 
