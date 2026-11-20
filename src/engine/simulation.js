@@ -974,7 +974,9 @@ export function evolveWorld(previousState, proposal = {}, options = {}) {
     }
   }
   state.calendar.turnLabel = `第 ${state.round} 轮 · ${state.calendar.year}年${state.calendar.month}月${state.calendar.day}日`;
-  const rng = new SeededRandom(`${state.seed}:round:${state.round}`);
+  // 重 roll：同一轮用同一个种子会掷出一模一样的结果，所以重掷时把序数拌进种子里。
+  const reroll = Math.max(0, Math.trunc(Number(options.reroll) || 0));
+  const rng = new SeededRandom(reroll > 0 ? `${state.seed}:round:${state.round}:reroll:${reroll}` : `${state.seed}:round:${state.round}`);
   let sequence = 0;
   const globalModifier = integer(options.diceModifier, 0, -10, 10);
   const check = (input) => {
@@ -1035,12 +1037,31 @@ export function evolveWorld(previousState, proposal = {}, options = {}) {
   // 成功推演计数：重 roll 会回退轮次但不会回退这个计数，分级压缩以它为准
   state.evolutionCount = integer(state.evolutionCount, 0, 0) + 1;
   const compressed = maybeCompress(state, options);
-  const roundLogs = state.logs.filter((log) => log.round === state.round && log.public);
-  const substantive = roundLogs.filter((log) => log.type !== 'daily' && log.type !== 'festival');
-  state.worldDigest = (substantive.length ? substantive : roundLogs).slice(0, 4).map((log) => log.title).join('；') || '各方继续处理自己的目标，世界局势暂未出现公开剧变。';
+  // 世界脉搏写的是世界本身：全境盛衰、谁在抬头、哪里在烧、哪些事还在推进。
+  // 不要复述某个角色做了什么——那会把宏观摘要写成一则人物流水账。
+  const regionCount = Math.max(1, state.regions.length);
+  const avgProsperity = Math.round(state.regions.reduce((sum, region) => sum + region.prosperity, 0) / regionCount);
+  const avgUnrest = Math.round(state.regions.reduce((sum, region) => sum + region.unrest, 0) / regionCount);
+  const buoyant = [...state.regions].sort((a, b) => b.prosperity - a.prosperity)[0];
+  const restless = [...state.regions].sort((a, b) => b.unrest - a.unrest)[0];
+  const ascendant = [...state.factions].sort((a, b) => (b.resources.influence + b.authority) - (a.resources.influence + a.authority))[0];
+  const fraying = [...state.factions].sort((a, b) => (b.tension || 0) - (a.tension || 0))[0];
+  const pendingEvents = state.events.filter((event) => event.status === 'active');
+  const pulseParts = [
+    `第 ${state.round} 轮，全境平均繁荣 ${avgProsperity}、动荡 ${avgUnrest}`,
+    buoyant ? `景气最盛的是${buoyant.name}（繁荣 ${buoyant.prosperity}）` : '',
+    restless && restless.unrest >= 35 ? `最不安的是${restless.name}（动荡 ${restless.unrest}）` : '',
+    ascendant ? `${ascendant.name}声势领先（影响 ${ascendant.resources.influence}、权威 ${Math.round(ascendant.authority)}）` : '',
+    fraying && (fraying.tension || 0) >= 45 ? `${fraying.name}内部离心最重（张力 ${Math.round(fraying.tension)}）` : '',
+    pendingEvents.length
+      ? `${pendingEvents.length} 件事仍在推进：${pendingEvents.slice(0, 2).map((event) => event.name).join('、')}`
+      : '暂时没有公开事件在推进',
+  ].filter(Boolean);
+  state.worldDigest = `${pulseParts.join('；')}。`;
   state.lastEvolution = {
     round: state.round,
     evolutionCount: state.evolutionCount,
+    reroll,
     coreNpcActions: coreNpcs.length,
     factionActions: state.factions.length,
     diceRolls: state.dice.filter((roll) => roll.round === state.round).length,

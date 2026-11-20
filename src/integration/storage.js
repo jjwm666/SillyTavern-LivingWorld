@@ -119,11 +119,22 @@ export class WorldStore {
     return migrateCheckpoints(raw);
   }
 
-  async saveCheckpoint(messageIndex, turnKey, before, state) {
+  /** 最近一次推演的检查点，重 roll 用它回到推演之前。 */
+  latestCheckpoint() {
+    return this.checkpoints().at(-1) || null;
+  }
+
+  async saveCheckpoint(messageIndex, turnKey, before, state, extras = {}) {
     const context = this.getContext();
     if (!context?.chatMetadata) return;
     const checkpoints = [...this.checkpoints().filter((checkpoint) => checkpoint.messageIndex !== messageIndex), {
-      messageIndex, turnKey, before: deepClone(before), state: deepClone(state), savedAt: Date.now(),
+      messageIndex,
+      turnKey,
+      before: deepClone(before),
+      state: deepClone(state),
+      proposal: extras.proposal ? deepClone(extras.proposal) : null,
+      rerollCount: Math.max(0, Number(extras.rerollCount) || 0),
+      savedAt: Date.now(),
     }].sort((a, b) => a.messageIndex - b.messageIndex).slice(-10);
     context.chatMetadata[CHECKPOINT_KEY] = checkpoints;
     context.chatMetadata[LAST_TURN_KEY] = turnKey;
@@ -133,6 +144,22 @@ export class WorldStore {
 
   lastTurn() {
     return this.getContext()?.chatMetadata?.[LAST_TURN_KEY] || '';
+  }
+
+  /** 撤销推演后让同一条消息可以重新自动推演。 */
+  async forgetLastTurn() {
+    const context = this.getContext();
+    if (!context?.chatMetadata) return;
+    delete context.chatMetadata[LAST_TURN_KEY];
+    await context.saveMetadata?.();
+  }
+
+  /** 丢掉最近一个检查点（边缘回合被撤销时用）。 */
+  async dropCheckpoint(messageIndex) {
+    const context = this.getContext();
+    if (!context?.chatMetadata) return;
+    context.chatMetadata[CHECKPOINT_KEY] = this.checkpoints().filter((checkpoint) => checkpoint.messageIndex !== messageIndex);
+    await context.saveMetadata?.();
   }
 
   async clear() {

@@ -1159,3 +1159,94 @@ input.lw-inline-input { max-width: 10ch; }
   border: 1px solid rgba(18, 40, 58, .08);
   color: #3f4f5b;
 }
+
+/* ── 极简制图：区域是一块块地，不再是圆点 ───────────────── */
+.lw-map-atlas .lw-atlas-district .lw-atlas-shape {
+  fill: color-mix(in srgb, var(--region-color) 12%, #fbfcfc);
+  stroke: #ccd7dd;
+  stroke-width: 1.1;
+  transition: fill .18s ease, stroke .18s ease;
+}
+.lw-map-atlas .lw-atlas-district:hover .lw-atlas-shape {
+  fill: color-mix(in srgb, var(--region-color) 20%, #ffffff);
+  stroke: #a6b6c0;
+}
+.lw-map-atlas .lw-atlas-district.active .lw-atlas-shape,
+.lw-map-atlas .lw-atlas-district:focus-visible .lw-atlas-shape {
+  fill: color-mix(in srgb, var(--region-color) 28%, #ffffff);
+  stroke: #5c7080;
+  stroke-width: 1.9;
+}
+.lw-atlas-pin { fill: color-mix(in srgb, var(--region-color, #65827c) 76%, #24323c); }
+.lw-atlas-name {
+  fill: #27363f; font-size: 14.5px; font-weight: 600; letter-spacing: .16em;
+}
+.lw-atlas-meta { fill: #7d8c97; font-size: 10.5px; letter-spacing: .05em; }
+.lw-atlas-connect {
+  fill: none; stroke: #c0ccd4; stroke-width: 1.15; stroke-linecap: round;
+  stroke-dasharray: 0;
+}
+.lw-atlas-connect.lw-atlas-connect-major { stroke: #a9b8c2; stroke-width: 2.3; }
+.lw-atlas-connect.highlighted { stroke: #6d8291; stroke-width: 2.6; }
+.lw-atlas-district { cursor: pointer; }
+
+/* ── 推演菜单与推演中状态 ───────────────────────────────── */
+.lw-run-controls { position: relative; display: flex; align-items: center; gap: 6px; }
+.lw-run-toggle.is-running { color: var(--lw-teal); }
+.lw-run-menu {
+  position: absolute; top: calc(100% + 10px); right: 0; width: 248px; padding: 6px;
+  display: none; z-index: 40; border-radius: 14px; border: 1px solid var(--lw-line-strong);
+  background: var(--lw-surface-2); box-shadow: 0 20px 46px rgba(0, 0, 0, .45);
+}
+#living-world-root.lw-run-menu-open .lw-run-menu { display: grid; gap: 2px; }
+.lw-run-menu button {
+  display: grid; gap: 1px; text-align: left; padding: 9px 11px; border: 0; border-radius: 10px;
+  background: transparent; color: var(--lw-text); font: inherit; cursor: pointer;
+}
+.lw-run-menu button:hover { background: var(--lw-surface-3); }
+.lw-run-menu button strong { font-size: 13px; font-weight: 600; }
+.lw-run-menu button small { font-size: 11px; color: var(--lw-muted); }
+.lw-run-menu button:disabled { opacity: .45; cursor: not-allowed; }
+.lw-spinner {
+  display: inline-block; width: 15px; height: 15px; border-radius: 50%;
+  border: 2px solid currentColor; border-top-color: transparent;
+  animation: lw-spin .8s linear infinite;
+}
+@keyframes lw-spin { to { transform: rotate(360deg); } }
+
+#living-world-root[data-theme="glass"] .lw-run-menu {
+  background: rgba(255, 255, 255, .93); border-color: rgba(120, 150, 168, .32);
+  box-shadow: 0 24px 50px rgba(40, 64, 80, .22);
+}
+#living-world-root[data-theme="glass"] .lw-run-menu button { color: #1d2731; }
+#living-world-root[data-theme="glass"] .lw-run-menu button small { color: #62717c; }
+#living-world-root[data-theme="glass"] .lw-run-menu button:hover { background: rgba(120, 160, 180, .16); }
+
+/* ── 液态玻璃下的小仪表盘：轨道与内圈要用浅色玻璃，否则圆环糊成一片 ── */
+#living-world-root[data-theme="glass"] .lw-prosperity-ring {
+  background: conic-gradient(var(--lw-teal) var(--value), rgba(96, 124, 142, .16) 0);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .55), 0 10px 24px rgba(40, 70, 90, .12);
+}
+#living-world-root[data-theme="glass"] .lw-prosperity-ring::before {
+  background: rgba(255, 255, 255, .84);
+  backdrop-filter: blur(8px);
+}
+#living-world-root[data-theme="glass"] .lw-prosperity-ring strong { color: #1b2530; }
+#living-world-root[data-theme="glass"] .lw-prosperity-ring span { color: #63737e; }
+#living-world-root[data-theme="glass"] .lw-count-label { color: #5f6f7a; }
+#living-world-root[data-theme="glass"] .lw-dice-filters button {
+  background: rgba(255, 255, 255, .62); border-color: rgba(120, 150, 168, .3); color: #2a3843;
+}
+#living-world-root[data-theme="glass"] .lw-dice-filters button.active {
+  background: rgba(255, 255, 255, .92); border-color: rgba(60, 150, 140, .55); color: #14343a;
+}
+
+/* 极简制图的画布是浅底，操作提示也换成白瓷小签 */
+.lw-map-atlas .lw-map-hint,
+#living-world-root[data-theme="glass"] .lw-map-hint {
+  background: rgba(255, 255, 255, .88);
+  border-color: #dbe4e8;
+  color: #6f7d86;
+  font-size: 9px;
+  letter-spacing: .04em;
+}

@@ -142,6 +142,47 @@ function cityFabric(seedText, depth = 0) {
   return `<g class="lw-atlas-fabric" aria-hidden="true">${out.join('')}</g>`;
 }
 
+/**
+ * 极简制图下的区域轮廓：按 id 播种的柔和多边形。
+ * 真实地图上不会用圆点代表一座城，所以这里给每个区域一块地，
+ * 面积随背景人口变化，季节与势力色只做极淡的染色。
+ */
+function districtGeometry(region) {
+  const rng = mulberry32(hashNumber(`district:${region.id}`));
+  const population = Math.max(500, Number(region.population) || 2000);
+  const size = 40 + Math.min(32, Math.log10(population) * 6.5);
+  const rotation = rng() * Math.PI * 2;
+  const steps = 13;
+  const points = [];
+  for (let index = 0; index < steps; index += 1) {
+    const angle = rotation + (index / steps) * Math.PI * 2;
+    const radius = size * (0.72 + rng() * 0.46);
+    points.push([region.x + Math.cos(angle) * radius * 1.24, region.y + Math.sin(angle) * radius * 0.84]);
+  }
+  const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  const first = mid(points[points.length - 1], points[0]);
+  let d = `M${first[0].toFixed(1)} ${first[1].toFixed(1)}`;
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    const next = points[(index + 1) % points.length];
+    const center = mid(point, next);
+    d += ` Q${point[0].toFixed(1)} ${point[1].toFixed(1)} ${center[0].toFixed(1)} ${center[1].toFixed(1)}`;
+  }
+  return `${d} Z`;
+}
+
+/** 两点之间的道路带一点弧度，像真正的街道而不是几何直线。 */
+function roadPath(from, to, seed) {
+  const rng = mulberry32(hashNumber(`road:${seed}`));
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const offset = (rng() - 0.5) * Math.min(46, length * 0.22);
+  const cx = (from.x + to.x) / 2 - (dy / length) * offset;
+  const cy = (from.y + to.y) / 2 + (dx / length) * offset;
+  return `M${from.x} ${from.y} Q${cx.toFixed(1)} ${cy.toFixed(1)} ${to.x} ${to.y}`;
+}
+
 
 export function renderEmpty(status) {
   const busy = status?.kind === 'running';
@@ -393,8 +434,8 @@ export function normalizeMapView(view) {
 export function renderMap(world, selectedRegionId, view = {}, scope = {}, styleMode = 'auto') {
   const regions = scope.regions || world.regions;
   const path = scope.path || [];
-  // auto：世界层用深色星图，进入次级 / 次次级后自动切成极简制图
-  const atlas = styleMode === 'atlas' || (styleMode !== 'dark' && path.length > 0);
+  // auto / atlas：一律走极简制图；只有显式选「深色星图」才回到星空节点图。
+  const atlas = styleMode !== 'dark';
   const parent = path.at(-1) || null;
   const selected = byId(regions, selectedRegionId);
   const mapView = normalizeMapView(view);
@@ -409,7 +450,13 @@ export function renderMap(world, selectedRegionId, view = {}, scope = {}, styleM
       seen.add(key);
       const highlighted = selected && (region.id === selected.id || target.id === selected.id);
       const weight = Math.max(1, Math.min(4, Number(edge.distance) || 1));
-      lines.push(`<line class="lw-map-route ${highlighted ? 'highlighted' : ''}" x1="${region.x}" y1="${region.y}" x2="${target.x}" y2="${target.y}" style="stroke-width:${(atlas ? 1.8 + weight * 0.55 : 2.4 + weight * 0.7).toFixed(2)}px"><title>${e(region.name)} ↔ ${e(target.name)} · 距离 ${edge.distance}</title></line>`);
+      const title = `<title>${e(region.name)} ↔ ${e(target.name)} · 距离 ${edge.distance}</title>`;
+      if (atlas) {
+        const major = weight >= 3 ? ' lw-atlas-connect-major' : '';
+        lines.push(`<path class="lw-atlas-connect${major}${highlighted ? ' highlighted' : ''}" d="${roadPath(region, target, key)}">${title}</path>`);
+      } else {
+        lines.push(`<line class="lw-map-route ${highlighted ? 'highlighted' : ''}" x1="${region.x}" y1="${region.y}" x2="${target.x}" y2="${target.y}" style="stroke-width:${(2.4 + weight * 0.7).toFixed(2)}px">${title}</line>`);
+      }
     }
   }
   const nodes = regions.map((region) => {
@@ -417,7 +464,17 @@ export function renderMap(world, selectedRegionId, view = {}, scope = {}, styleM
     const active = selected?.id === region.id;
     const npcCount = world.npcs.filter((npc) => npc.alive && npc.locationId === region.id).length;
     const childCount = region.children?.length || 0;
-    return `<g class="lw-map-node ${active ? 'active' : ''}" data-lw-action="region-select" data-id="${e(region.id)}" role="button" tabindex="0" aria-label="${e(region.name)}${childCount ? `，包含 ${childCount} 个次级区域` : ''}">
+    const aria = `${e(region.name)}${childCount ? `，包含 ${childCount} 个次级区域` : ''}`;
+    if (atlas) {
+      const detail = childCount ? `${childCount} 个次级区域` : `${npcCount} 位核心人物`;
+      return `<g class="lw-atlas-district ${active ? 'active' : ''}" data-lw-action="region-select" data-id="${e(region.id)}" role="button" tabindex="0" aria-label="${aria}" style="--region-color:${e(faction?.color || '#65827c')}">
+      <path class="lw-atlas-shape" d="${districtGeometry(region)}"><title>${e(region.name)} · ${e(region.weather.type)} · ${e(detail)}</title></path>
+      <circle class="lw-atlas-pin" cx="${region.x}" cy="${region.y}" r="3.6"/>
+      <text class="lw-atlas-name" x="${region.x}" y="${region.y - 9}" text-anchor="middle">${e(region.name)}</text>
+      <text class="lw-atlas-meta" x="${region.x}" y="${region.y + 11}" text-anchor="middle">${e(region.weather.type)} · ${childCount ? `${childCount} 次级` : `${npcCount} 人`}</text>
+    </g>`;
+    }
+    return `<g class="lw-map-node ${active ? 'active' : ''}" data-lw-action="region-select" data-id="${e(region.id)}" role="button" tabindex="0" aria-label="${aria}">
       <circle class="lw-map-node-halo" cx="${region.x}" cy="${region.y}" r="${active ? 34 : 28}"/>
       <circle class="lw-map-node-core" cx="${region.x}" cy="${region.y}" r="19" style="--region-color:${e(faction?.color || '#65827c')}"/>
       <text class="lw-map-node-symbol" x="${region.x}" y="${region.y + 4}" text-anchor="middle">${e(region.name.slice(0, 1))}</text>
@@ -562,22 +619,37 @@ export function renderEvents(world) {
 
 export function renderDice(world, filter = 'all') {
   const classify = (roll) => {
+    if (!roll || typeof roll !== 'object') return 'world';
     if (roll.actorId === 'player' || byId(world.npcs, roll.actorId)) return 'people';
-    if (roll.action === 'regional_incident' || roll.action.startsWith('event_') || byId(world.events, roll.actorId)) return 'events';
+    const action = String(roll.action || '');
+    if (action === 'regional_incident' || action.startsWith('event_') || byId(world.events, roll.actorId)) return 'events';
     if (byId(world.factions, roll.actorId)) return 'factions';
     return 'world';
   };
-  const counts = { all: world.dice.length, people: 0, events: 0, factions: 0, world: 0 };
-  for (const roll of world.dice) counts[classify(roll)] += 1;
+  // 计数只数屏幕上真正能找到的判定，四类之和必然等于「全部」，不会再出现对不上的总数。
+  const counts = { all: 0, people: 0, events: 0, factions: 0, world: 0 };
+  for (const roll of world.dice) {
+    const kind = classify(roll);
+    counts[kind] += 1;
+    counts.all += 1;
+  }
+  const currentRound = world.dice.filter((roll) => roll.round === world.round).length;
   const rolls = [...world.dice].reverse().filter((roll) => filter === 'all' || classify(roll) === filter);
   const rows = rolls.map((roll) => {
     const actor = byId(world.npcs, roll.actorId) || byId(world.factions, roll.actorId) || byId(world.regions, roll.actorId) || byId(world.events, roll.actorId);
     const base = roll.baseModifier ?? roll.modifier;
     const global = roll.globalModifier || 0;
-    return `<article class="lw-dice-row"><div class="lw-die lw-${e(roll.outcome)}"><span>d20</span><strong>${roll.roll}</strong></div><div class="lw-dice-main"><div><strong>${e(actor?.name || (roll.actorId === 'world' ? '世界判定' : roll.actorId === 'player' ? '玩家' : roll.actorId))}</strong>${pill(ACTION_LABELS[roll.action] || roll.action)}<span class="lw-outcome lw-${e(roll.outcome)}">${e(outcomeLabel(roll.outcome))}</span></div><p>${e(roll.reason)}</p><small>ROUND ${roll.round} · ${e(roll.formula)} · 随机序列 #${roll.randomCall}</small><small class="lw-modifier-breakdown">情境修正 ${base >= 0 ? '+' : ''}${base} ${global ? `${global > 0 ? '+' : ''}${global}（用户全局修正）` : '＋ 全局修正 0'} ＝ 总修正 ${roll.modifier >= 0 ? '+' : ''}${roll.modifier}</small></div><div class="lw-dice-total"><strong>${roll.total}</strong><span>难度 ${roll.difficulty}</span></div></article>`;
+    const signed = (value) => `${value >= 0 ? '+' : ''}${value}`;
+    // 老存档里没有拆分字段时只报总修正，避免把总修正同时算进情境与全局两栏。
+    const modifierLine = Number.isFinite(roll.baseModifier)
+      ? `情境修正 ${signed(base)} ${global ? `${signed(global)}（用户全局修正）` : '＋ 全局修正 0'} ＝ 总修正 ${signed(roll.modifier)}`
+      : `总修正 ${signed(roll.modifier)}`;
+    return `<article class="lw-dice-row"><div class="lw-die lw-${e(roll.outcome)}"><span>d20</span><strong>${roll.roll}</strong></div><div class="lw-dice-main"><div><strong>${e(actor?.name || (roll.actorId === 'world' ? '世界判定' : roll.actorId === 'player' ? '玩家' : roll.actorId))}</strong>${pill(ACTION_LABELS[roll.action] || roll.action)}<span class="lw-outcome lw-${e(roll.outcome)}">${e(outcomeLabel(roll.outcome))}</span></div><p>${e(roll.reason)}</p><small>ROUND ${roll.round} · ${e(roll.formula)} · 随机序列 #${roll.randomCall}</small><small class="lw-modifier-breakdown">${modifierLine}</small></div><div class="lw-dice-total"><strong>${roll.total}</strong><span>难度 ${roll.difficulty}</span></div></article>`;
   }).join('');
   const filters = [['all', '全部'], ['people', '人物与玩家'], ['events', '事件'], ['factions', '势力'], ['world', '天气/经济/地区']];
-  return `<section class="lw-view-enter">${sectionHeading('THE MODEL PROPOSES, THE DICE DECIDE', '分类骰点判定档案', `<span class="lw-count-label">保留最近 ${world.dice.length} 次判定</span>`)}<div class="lw-dice-filters">${filters.map(([id, label]) => `<button class="${filter === id ? 'active' : ''}" data-lw-action="dice-filter" data-filter="${id}">${label}<span>${counts[id]}</span></button>`).join('')}</div>
+  const rerollCount = Math.max(0, Number(world.lastEvolution?.reroll) || 0);
+  const rerollNote = rerollCount > 0 ? ` · 本轮已重掷 ${rerollCount} 次` : '';
+  return `<section class="lw-view-enter">${sectionHeading('THE MODEL PROPOSES, THE DICE DECIDE', '分类骰点判定档案', `<span class="lw-count-label">本轮 ${currentRound} 次 · 档案内累计 ${counts.all} 次${rerollNote}</span>`)}<div class="lw-dice-filters">${filters.map(([id, label]) => `<button class="${filter === id ? 'active' : ''}" data-lw-action="dice-filter" data-filter="${id}">${label}<span>${counts[id]}</span></button>`).join('')}</div>
     ${fold('判定规则说明', `<div class="lw-dice-explain">${icon('info', 16)}原值、情境修正、用户全局修正、难度与随机序列均独立记录。相同种子、设置和意图可以复现结果。</div>`, { open: false, key: 'dice-explain' })}
     ${fold('判定记录', `<div class="lw-dice-list">${rows || '<div class="lw-no-data">此分类暂时没有判定记录。</div>'}</div>`, { open: true, key: 'dice-list', hint: `${rows.length || 0} 条` })}
   </section>`;
@@ -593,7 +665,7 @@ export function renderSettings(settings, status, world, models = []) {
   return `<section class="lw-settings lw-view-enter">${sectionHeading('ENGINE CONTROL', '世界引擎设置', `<span class="lw-save-state">${e(status?.message || '设置自动保存在当前酒馆')}</span>`)}
     <form id="lw-settings-form" class="lw-settings-form">
       <details class="lw-fold lw-settings-section lw-fold-open" data-fold-key="设置·推演与判定" open><summary><h3>推演与判定</h3></summary><div class="lw-fold-body"><label class="lw-toggle-row"><span><strong>回复后自动记录与推演</strong><small>按下方间隔累计主 AI 回复，达到次数后推进一次世界</small></span><input type="checkbox" name="autoEvolve" ${settings.autoEvolve ? 'checked' : ''}><i></i></label><div class="lw-field-grid"><label>每 X 次回复推演一次<input type="number" name="evolutionInterval" min="1" max="20" value="${settings.evolutionInterval}"><small>1 表示每次回复；待推演进度会随聊天保存</small></label><label>用户全局骰点修正<input type="number" name="diceModifier" min="-10" max="10" value="${settings.diceModifier}"><small>-10 至 +10，叠加到每次本地判定并单独留档</small></label></div><label class="lw-toggle-row"><span><strong>无世界时自动初始化</strong><small>首次回复后根据当前角色卡建立世界</small></span><input type="checkbox" name="autoBootstrap" ${settings.autoBootstrap ? 'checked' : ''}><i></i></label><label class="lw-toggle-row"><span><strong>注入叙事者秘密</strong><small>默认关闭，避免主 AI 意外泄露 NPC 私人计划</small></span><input type="checkbox" name="includeSecrets" ${settings.includeSecrets ? 'checked' : ''}><i></i></label></div></details>
-      <details class="lw-fold lw-settings-section lw-fold-open" data-fold-key="设置·外观与悬浮入口" open><summary><h3>外观与悬浮入口</h3></summary><div class="lw-fold-body"><div class="lw-field-grid"><label>面板主题<select name="theme">${themeOptions(settings)}</select></label><label>玻璃透明度<input type="number" name="glassOpacity" min="15" max="95" step="5" value="${Math.round((Number(settings.glassOpacity ?? 0.55)) * 100)}"><small>仅在液态玻璃主题下生效，数值越小越通透</small></label><label>地图绘制风格<select name="mapStyle"><option value="auto" ${!settings.mapStyle || settings.mapStyle === 'auto' ? 'selected' : ''}>自动（世界层深色，次级转极简制图）</option><option value="atlas" ${settings.mapStyle === 'atlas' ? 'selected' : ''}>极简制图（浅色 GIS 矢量）</option><option value="dark" ${settings.mapStyle === 'dark' ? 'selected' : ''}>深色星图</option></select></label><label>悬浮按钮大小<input type="number" name="floatingSize" min="42" max="88" value="${settings.floatingSize}"><small>也可拖动悬浮球右下角调整</small></label></div><label class="lw-toggle-row"><span><strong>显示悬浮按钮</strong><small>关闭后仍可通过酒馆右上角菜单中的“万象世界引擎”打开</small></span><input type="checkbox" name="floatingButton" ${settings.floatingButton ? 'checked' : ''}><i></i></label></div></details>
+      <details class="lw-fold lw-settings-section lw-fold-open" data-fold-key="设置·外观与悬浮入口" open><summary><h3>外观与悬浮入口</h3></summary><div class="lw-fold-body"><div class="lw-field-grid"><label>面板主题<select name="theme">${themeOptions(settings)}</select></label><label>玻璃透明度<input type="number" name="glassOpacity" min="15" max="95" step="5" value="${Math.round((Number(settings.glassOpacity ?? 0.55)) * 100)}"><small>仅在液态玻璃主题下生效，数值越小越通透</small></label><label>地图绘制风格<select name="mapStyle"><option value="auto" ${!settings.mapStyle || settings.mapStyle === 'auto' ? 'selected' : ''}>自动（极简制图，进入次级更精细）</option><option value="atlas" ${settings.mapStyle === 'atlas' ? 'selected' : ''}>极简制图（浅色 GIS 矢量）</option><option value="dark" ${settings.mapStyle === 'dark' ? 'selected' : ''}>深色星图</option></select></label><label>悬浮按钮大小<input type="number" name="floatingSize" min="42" max="88" value="${settings.floatingSize}"><small>也可拖动悬浮球右下角调整</small></label></div><label class="lw-toggle-row"><span><strong>显示悬浮按钮</strong><small>关闭后仍可通过酒馆右上角菜单中的“万象世界引擎”打开</small></span><input type="checkbox" name="floatingButton" ${settings.floatingButton ? 'checked' : ''}><i></i></label></div></details>
       <details class="lw-fold lw-settings-section lw-prompt-section" data-fold-key="设置·提示词与自定义预设"><summary><h3>提示词与自定义预设</h3></summary><div class="lw-fold-body"><div class="lw-preset-row"><label>世界预设<select name="promptPreset">${presetOptions.map((preset) => `<option value="${e(preset.id)}" ${settings.promptPreset === preset.id ? 'selected' : ''}>${e(preset.name)}</option>`).join('')}</select></label><button type="button" class="lw-button" data-lw-action="apply-prompt-preset">载入预设</button><button type="button" class="lw-button" data-lw-action="delete-prompt-preset">删除自定义预设</button></div><div class="lw-preset-save"><input name="newPromptPresetName" maxlength="60" placeholder="新预设名称"><button type="button" class="lw-button" data-lw-action="save-prompt-preset">${icon('plus')}将当前内容另存为预设</button></div><div class="lw-prompt-grid"><label>初始化提示词<textarea name="bootstrapPrompt" rows="4" maxlength="6000" placeholder="控制地图、人物、势力和题材如何生成">${e(settings.bootstrapPrompt)}</textarea></label><label>每轮推演提示词<textarea name="evolutionPrompt" rows="4" maxlength="6000" placeholder="控制 NPC 行动偏好、事件密度和世界演化方向">${e(settings.evolutionPrompt)}</textarea></label><label class="lw-prompt-wide">自定义破限词<textarea name="jailbreakPrompt" rows="3" maxlength="6000" placeholder="填写需要同时附加到初始化与推演请求的自定义创作指令">${e(settings.jailbreakPrompt)}</textarea></label></div><p class="lw-field-help">自定义预设保存初始化、推演和破限词三项内容，只发送给后台世界模型，不修改酒馆全局预设或聊天记录。</p></div></details>
       <details class="lw-fold lw-settings-section" data-fold-key="设置·后台 API"><summary><h3>后台 API</h3></summary><div class="lw-fold-body"><div class="lw-segmented"><label><input type="radio" name="connectionMode" value="st" ${!custom ? 'checked' : ''}><span>酒馆当前连接</span></label><label><input type="radio" name="connectionMode" value="custom" ${custom ? 'checked' : ''}><span>独立兼容接口</span></label></div><div class="lw-custom-api ${custom ? '' : 'muted'}"><label>Base URL<input name="customBaseUrl" value="${e(settings.customBaseUrl)}" placeholder="https://provider.example/v1" autocomplete="off"></label><label>API Key<input type="password" name="customApiKey" value="${e(settings.customApiKey)}" placeholder="不会写入世界存档" autocomplete="off"></label><label>模型名<input name="customModel" list="lw-model-list" value="${e(settings.customModel)}" placeholder="model-name" autocomplete="off"></label><datalist id="lw-model-list">${models.map((id) => `<option value="${e(id)}"></option>`).join('')}</datalist><div class="lw-model-picker" data-lw-model-picker><div class="lw-model-picker-head"><span>可选模型</span><em data-lw-model-count>${models.length ? `${models.length} 个` : '尚未拉取'}</em></div><div class="lw-model-picker-list" data-lw-model-list>${models.length ? models.map((id) => `<button type="button" class="lw-model-chip" data-lw-action="pick-model" data-model="${e(id)}">${e(id)}</button>`).join('') : '<small>点右侧“拉取模型列表”，结果会直接展开在下面，不会重载面板。</small>'}</div></div><div class="lw-custom-api-actions"><button type="button" class="lw-button" data-lw-action="fetch-models">${icon('refresh')}拉取模型列表</button><button type="button" class="lw-button" data-lw-action="test-api">${icon('check')}测试连接</button></div></div><p class="lw-field-help">Base URL 填到 /v1 或完整 /chat/completions。“拉取模型列表”会请求 /models 验证连通性并填入模型名下拉框；“测试连接”会真实生成一次 JSON 验证推演链路。酒馆连接模式使用 generateRaw 后台调用，模型跟随酒馆主 API。</p></div></details>
       <details class="lw-fold lw-settings-section lw-focus-section" data-fold-key="设置·派系、风声与相关性注入"><summary><h3>派系、风声与相关性注入</h3></summary><div class="lw-fold-body"><label class="lw-toggle-row"><span><strong>让世界模型自造内部派系</strong><small>开启后每轮可依据角色卡与局势提出新的内部派系，而不是只用内置名单</small></span><input type="checkbox" name="aiClans" ${settings.aiClans !== false ? 'checked' : ''}><i></i></label><label class="lw-toggle-row"><span><strong>按正文焦点注入</strong><small>世界仍然全量运转，但只把玩家所在地区、正文提到的人与其势力注入主 API</small></span><input type="checkbox" name="focusInjection" ${settings.focusInjection !== false ? 'checked' : ''}><i></i></label><div class="lw-field-grid"><label>焦点人物上限<input type="number" name="focusNpcLimit" min="3" max="16" value="${settings.focusNpcLimit}"></label><label>焦点势力上限<input type="number" name="focusFactionLimit" min="2" max="10" value="${settings.focusFactionLimit}"></label></div><p class="lw-field-help">风声分四层：官方通告传得最快也最可信，区域消息基本出不了本地，小道消息真假难辨，密闻几乎不扩散。层级与传播范围由推演决定，也可以在事件面板里点开一则风声就地改写。</p></div></details>

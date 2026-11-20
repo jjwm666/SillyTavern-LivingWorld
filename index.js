@@ -6,7 +6,7 @@ import { applyWorldEdit } from './src/engine/edits.js';
 import { evolveWorld } from './src/engine/simulation.js';
 import { deepClone, downloadJson, hashString, safeJsonParse } from './src/engine/utils.js';
 import { WorldAPI } from './src/integration/api.js';
-import { buildWorldContext, extractRecentConversation } from './src/integration/context.js';
+import { buildWorldContext, extractRecentConversation, readChat } from './src/integration/context.js';
 import { selectBaseline, selectRollback, WorldStore } from './src/integration/storage.js';
 import { LivingWorldPanel } from './src/ui/panel.js';
 
@@ -46,6 +46,7 @@ class LivingWorldController {
     this.abortController = null;
     this.chatToken = 0;
     this.initialized = false;
+    this.chatReadWarningShown = false;
     this.panel = new LivingWorldPanel({
       onInitialize: () => this.initializeWorld(),
       onEvolve: () => this.world ? this.evolve({ manual: true }) : this.initializeWorld(),
@@ -54,6 +55,9 @@ class LivingWorldController {
       onImport: (raw) => this.importWorld(raw),
       onEditWorld: (raw) => this.editWorld(raw),
       onEditField: (payload) => this.editWorldField(payload),
+      onRerollTurn: (mode) => this.rerollTurn(mode),
+      onDiscardEvolution: () => this.discardEvolution(),
+      onRollbackTurn: () => this.rollbackTurn(),
       onTogglePin: (kind, id) => this.togglePinned(kind, id),
       onReset: () => this.resetWorld(),
       onTestApi: () => this.testApi(),
@@ -174,7 +178,7 @@ class LivingWorldController {
     const settings = this.getSettings();
     const depth = Math.max(0, Math.min(8, Number(settings.injectDepth) || 0));
     // 焦点注入依赖最近对话：正文写在哪儿，就注入哪儿。
-    const conversation = extractRecentConversation(context.chat, 6, 6000);
+    const conversation = extractRecentConversation(readChat(context), 6, 6000);
     const value = this.world ? buildWorldContext(this.world, {
       maxChars: settings.injectMaxChars,
       includeSecrets: settings.includeSecrets,
@@ -206,7 +210,7 @@ class LivingWorldController {
       },
       group: context.groups?.[context.groupId]?.name || '',
       worldInfo: worldbookDigest(context),
-      recentConversation: extractRecentConversation(context.chat, 14, 18000),
+      recentConversation: extractRecentConversation(readChat(context), 14, 18000),
     }, null, 2);
   }
 
@@ -266,8 +270,13 @@ class LivingWorldController {
     if (this.evolutionPromise) {
       try { await this.evolutionPromise; } catch { /* 状态栏已显示错误 */ }
     }
-    let baseline = selectBaseline(this.store.checkpoints(), this.context().chat);
+    let baseline = selectBaseline(this.store.checkpoints(), readChat(this.context()));
     if (!baseline) baseline = this.world;
+    // 读不到正文时明确报出来，否则注入会变成一份和故事无关的世界档案。
+    if (this.world && !this.chatReadWarningShown && !readChat(this.context()).length) {
+      this.chatReadWarningShown = true;
+      this.setStatus('error', '没有读到当前聊天记录，注入将只包含世界设定；请确认酒馆已加载聊天后重新生成');
+    }
     this.generationBaseline = {
       chatKey: this.store.chatKey(),
       world: deepClone(baseline),
@@ -280,7 +289,7 @@ class LivingWorldController {
     const settings = this.getSettings();
     if (!settings.autoEvolve || this.generationBaseline?.type === 'continue') return;
     const context = this.context();
-    const chat = context.chat || [];
+    const chat = readChat(context);
     const last = chat.at(-1);
     if (!last || last.is_user) return;
     const messageIndex = chat.length - 1;
@@ -319,7 +328,7 @@ class LivingWorldController {
       let warning = '';
       try {
         this.abortController = new AbortController();
-        const conversation = extractRecentConversation(this.context().chat);
+        const conversation = extractRecentConversation(readChat(this.context()));
         proposal = await this.api.completeJson(buildEvolutionPrompt(before, conversation, this.getSettings()), {
           signal: this.abortController.signal,
           systemPrompt: '你是多主体世界的意图导演。只输出合法 JSON，不判定行动结果。',
@@ -330,14 +339,20 @@ class LivingWorldController {
         warning = `API 未完成，本轮使用本地意图：${error.message}`;
       }
       if (token !== this.chatToken || chatKey !== this.store.chatKey()) return null;
-      const world = evolveWorld(before, proposal, this.getSettings());
+      const existing = Number.isInteger(messageIndex)
+        ? this.store.checkpoints().find((checkpoint) => checkpoint.messageIndex === messageIndex)
+        : null;
+      // 同一层消息被重新生成（swipe）时，轮次号不变、种子不变，结果会一模一样；
+      // 所以这里把重掷序数拌进种子，让重新生成真的能换一种走法。
+      const reroll = existing ? (Number(existing.rerollCount) || 0) + 1 : 0;
+      const world = evolveWorld(before, proposal, { ...this.getSettings(), reroll });
       world.lastEvolution.turnKey = turnKey || `manual_${Date.now()}`;
-      world.lastEvolution.messageIndex = Number.isInteger(messageIndex) ? messageIndex : (this.context().chat || []).length - 1;
+      world.lastEvolution.messageIndex = Number.isInteger(messageIndex) ? messageIndex : readChat(this.context()).length - 1;
       world.lastEvolution.manual = Boolean(manual);
       this.world = world;
       await this.store.save(world);
       if (!manual && Number.isInteger(messageIndex)) {
-        await this.store.saveCheckpoint(messageIndex, turnKey, before, world);
+        await this.store.saveCheckpoint(messageIndex, turnKey, before, world, { proposal, rerollCount: reroll });
       }
       this.setStatus(warning ? 'error' : 'ready', warning || `第 ${world.round} 轮完成：${world.lastEvolution.diceRolls} 次判定`);
       this.panel.setData({ world, settings: this.getSettings(), status: this.status });
@@ -362,9 +377,9 @@ class LivingWorldController {
   }
 
   async handleMessageDeleted() {
-    const rollback = selectRollback(this.store.checkpoints(), this.context().chat || []);
+    const rollback = selectRollback(this.store.checkpoints(), readChat(this.context()));
     if (!rollback) return;
-    const count = (this.context().chat || []).length;
+    const count = readChat(this.context()).length;
     const metadata = this.context().chatMetadata;
     metadata[CHECKPOINT_KEY] = this.store.checkpoints().filter((checkpoint) => checkpoint.messageIndex < count);
     await this.context().saveMetadata?.();
@@ -403,6 +418,112 @@ class LivingWorldController {
       status: { kind: this.status.kind, message: `${result.label || '内容'}已更新` },
     });
     return true;
+  }
+
+  /**
+   * 重掷一轮：复用检查点里的意图，只重掷骰子；mode='full' 时重新问一次模型。
+   * 轮次号不变，靠 reroll 序数把随机种子拌开，所以同一条消息也能走出不同的结果。
+   */
+  async rerollTurn(mode = 'dice') {
+    if (this.evolutionPromise) {
+      this.panel.notify('正在推演中，等这一轮结束再重掷', 'error');
+      return null;
+    }
+    const checkpoint = this.store.latestCheckpoint();
+    if (!checkpoint?.before) {
+      this.panel.notify('没有找到这一轮之前的存档，无法重掷', 'error');
+      return null;
+    }
+    const settings = this.getSettings();
+    const round = checkpoint.before.round + 1;
+    const reroll = (Number(checkpoint.rerollCount) || 0) + 1;
+    this.setStatus('running', `正在重掷第 ${round} 轮${reroll > 1 ? `（第 ${reroll} 次）` : ''}`);
+    let proposal = mode === 'full' ? null : checkpoint.proposal || null;
+    let warning = '';
+    if (!proposal) {
+      try {
+        this.abortController = new AbortController();
+        const conversation = extractRecentConversation(readChat(this.context()));
+        proposal = await this.api.completeJson(buildEvolutionPrompt(checkpoint.before, conversation, settings), {
+          signal: this.abortController.signal,
+          systemPrompt: '你是一个多主体世界的意图导演。只输出合法 JSON，不要判定行动结果。',
+        });
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          this.setStatus('ready', '已取消重掷');
+          return null;
+        }
+        proposal = {};
+        warning = `后台模型没有返回意图，改用本地意图重掷：${error.message}`;
+      } finally {
+        this.abortController = null;
+      }
+    }
+    const before = deepClone(checkpoint.before);
+    const world = evolveWorld(before, proposal || {}, { ...settings, reroll });
+    world.lastEvolution.turnKey = checkpoint.turnKey || world.lastEvolution.turnKey;
+    world.lastEvolution.messageIndex = checkpoint.messageIndex;
+    world.lastEvolution.manual = Boolean(checkpoint.state?.lastEvolution?.manual);
+    this.world = world;
+    await this.store.save(world);
+    await this.store.saveCheckpoint(checkpoint.messageIndex, checkpoint.turnKey, before, world, { proposal, rerollCount: reroll });
+    this.setStatus(warning ? 'error' : 'ready', warning || `第 ${round} 轮已重掷（第 ${reroll} 次）：${world.lastEvolution.diceRolls} 次判定`);
+    this.panel.setData({ world, settings: this.getSettings(), status: this.status });
+    this.refreshInjection();
+    this.announce(warning || `第 ${round} 轮已重掷，换了一种走法`, warning ? 'error' : 'success');
+    return world;
+  }
+
+  /** 删除本次推演：世界退回这一轮之前，并让同一条消息可以重新自动推演。 */
+  async discardEvolution() {
+    if (this.evolutionPromise) {
+      this.panel.notify('正在推演中，先等它结束', 'error');
+      return null;
+    }
+    const checkpoint = this.store.latestCheckpoint();
+    if (!checkpoint?.before) {
+      this.panel.notify('没有可以撤销的推演', 'error');
+      return null;
+    }
+    const removedRound = Number(checkpoint.state?.round) || (Number(checkpoint.before.round) || 0) + 1;
+    this.world = normalizeWorld(deepClone(checkpoint.before));
+    await this.store.save(this.world);
+    await this.store.dropCheckpoint(checkpoint.messageIndex);
+    await this.store.forgetLastTurn();
+    this.refreshInjection();
+    this.panel.setData({
+      world: this.world,
+      settings: this.getSettings(),
+      status: { kind: 'ready', message: `已删除第 ${removedRound} 轮推演，世界回到推演之前` },
+    });
+    this.panel.notify('本次推演已删除，重新生成这条回复会重新推演', 'success');
+    return this.world;
+  }
+
+  /** 回退一轮：世界退到上一轮结束时的状态，再往上退一步。 */
+  async rollbackTurn() {
+    if (this.evolutionPromise) {
+      this.panel.notify('正在推演中，先等它结束', 'error');
+      return null;
+    }
+    const list = this.store.checkpoints();
+    if (list.length < 2) {
+      this.panel.notify('没有更早的一轮可以回退', 'error');
+      return null;
+    }
+    const latest = list.at(-1);
+    const previous = list.at(-2);
+    this.world = normalizeWorld(deepClone(previous.state || previous.before));
+    await this.store.save(this.world);
+    await this.store.dropCheckpoint(latest.messageIndex);
+    this.refreshInjection();
+    this.panel.setData({
+      world: this.world,
+      settings: this.getSettings(),
+      status: { kind: 'ready', message: `已回退到第 ${this.world.round} 轮结束时的世界` },
+    });
+    this.panel.notify(`已回退到第 ${this.world.round} 轮`, 'success');
+    return this.world;
   }
 
   async exportWorld() {

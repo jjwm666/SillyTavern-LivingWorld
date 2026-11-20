@@ -45,6 +45,7 @@ export class LivingWorldPanel {
     this.folds = new Map();
     this.inlineEdit = null;
     this.models = [];
+    this.runMenuOpen = false;
     this.mapStyleMode = 'auto';
     this.root = null;
     this.opened = false;
@@ -74,7 +75,7 @@ export class LivingWorldPanel {
           <div class="lw-sidebar-foot"><span class="lw-engine-pulse"></span><div><strong>LOCAL RULE ENGINE</strong><small>意图由模型提出 · 结果由规则判定</small></div></div>
         </aside>
         <div class="lw-workspace">
-          <header class="lw-header"><div class="lw-header-world"><button class="lw-icon-button lw-mobile-menu" data-lw-action="toggle-nav" aria-label="切换导航">${icon('menu')}</button><div><span class="lw-kicker">WORLD OBSERVATORY</span><h1 id="lw-world-title">尚未初始化世界</h1></div></div><div class="lw-header-actions"><span id="lw-run-status" class="lw-run-status"><i></i><span>待命</span></span><button class="lw-icon-button" data-lw-action="evolve" title="立即推演一轮">${icon('play')}</button><button class="lw-icon-button" data-lw-action="cancel-evolve" title="取消后台推演" disabled>${icon('stop')}</button><button class="lw-icon-button" data-lw-action="close" aria-label="关闭">${icon('close')}</button></div></header>
+          <header class="lw-header"><div class="lw-header-world"><button class="lw-icon-button lw-mobile-menu" data-lw-action="toggle-nav" aria-label="切换导航">${icon('menu')}</button><div><span class="lw-kicker">WORLD OBSERVATORY</span><h1 id="lw-world-title">尚未初始化世界</h1></div></div><div class="lw-header-actions"><span id="lw-run-status" class="lw-run-status"><i></i><span>待命</span></span><div class="lw-run-controls"><button class="lw-icon-button lw-run-toggle" data-lw-action="run-menu" title="推演与重掷" aria-haspopup="true" aria-expanded="false">${icon('play')}</button><button class="lw-icon-button" data-lw-action="cancel-evolve" title="取消后台推演" disabled>${icon('stop')}</button><div class="lw-run-menu" data-lw-run-menu role="menu"><button type="button" role="menuitem" data-lw-action="evolve"><strong>开始推演</strong><small>往下推进一轮世界</small></button><button type="button" role="menuitem" data-lw-action="reroll-turn" data-mode="dice"><strong>重 roll 本轮</strong><small>保留意图，重掷骰子</small></button><button type="button" role="menuitem" data-lw-action="reroll-turn" data-mode="full"><strong>重推演本轮</strong><small>重新问一次模型再掷</small></button><button type="button" role="menuitem" data-lw-action="discard-evolution"><strong>删除本次推演</strong><small>世界退回这一轮之前</small></button><button type="button" role="menuitem" data-lw-action="rollback-turn"><strong>回退一轮</strong><small>再退到上一轮结束时的世界</small></button></div></div><button class="lw-icon-button" data-lw-action="close" aria-label="关闭">${icon('close')}</button></div></header>
           <main id="lw-content" class="lw-content"></main>
         </div>
         <aside id="lw-inspector" class="lw-inspector" aria-label="人物详情"><button class="lw-icon-button lw-inspector-close" data-lw-action="close-inspector" aria-label="关闭详情">${icon('close')}</button><div id="lw-inspector-body"></div></aside>
@@ -256,6 +257,32 @@ export class LivingWorldPanel {
     this.root.querySelector('.lw-floating')?.classList.toggle('running', this.status.kind === 'running');
     const cancel = this.root.querySelector('.lw-header-actions [data-lw-action="cancel-evolve"]');
     if (cancel) cancel.disabled = this.status.kind !== 'running';
+    // 推演中把开始按钮换成转圈并禁用，否则点下去像没反应，用户会去刷新页面。
+    const runToggle = this.root.querySelector('.lw-run-toggle');
+    if (runToggle) {
+      const running = this.status.kind === 'running';
+      runToggle.disabled = running;
+      runToggle.classList.toggle('is-running', running);
+      runToggle.innerHTML = running ? '<span class="lw-spinner"></span>' : icon('play');
+      runToggle.title = running ? '正在推演，可点右侧停止' : '推演与重掷';
+      runToggle.setAttribute('aria-expanded', String(this.runMenuOpen && !running));
+    }
+    if (this.status.kind === 'running') this.closeRunMenu();
+  }
+
+  toggleRunMenu() {
+    this.runMenuOpen = !this.runMenuOpen;
+    this.root?.classList.toggle('lw-run-menu-open', this.runMenuOpen);
+    const toggle = this.root?.querySelector('.lw-run-toggle');
+    if (toggle) toggle.setAttribute('aria-expanded', String(this.runMenuOpen));
+    return this.runMenuOpen;
+  }
+
+  closeRunMenu() {
+    this.runMenuOpen = false;
+    this.root?.classList.remove('lw-run-menu-open');
+    const toggle = this.root?.querySelector('.lw-run-toggle');
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
   }
 
   renderInspector() {
@@ -279,10 +306,32 @@ export class LivingWorldPanel {
     }
     this.cancelInlineEdit();
     const target = event.target.closest('[data-lw-action]');
+    // 点菜单以外的任何地方都收起推演菜单。
+    if (!event.target.closest?.('.lw-run-controls')) this.closeRunMenu();
     if (!target || !this.root.contains(target)) return;
     const action = target.dataset.lwAction;
     // 折叠块标题里的按钮只执行自身动作，不要连带收起面板。
     if (target.closest('summary')) event.preventDefault();
+    if (action === 'run-menu') {
+      event.preventDefault();
+      this.toggleRunMenu();
+      return;
+    }
+    if (action === 'reroll-turn') {
+      this.closeRunMenu();
+      await this.callbacks.onRerollTurn?.(target.dataset.mode === 'full' ? 'full' : 'dice');
+      return;
+    }
+    if (action === 'discard-evolution') {
+      this.closeRunMenu();
+      await this.callbacks.onDiscardEvolution?.();
+      return;
+    }
+    if (action === 'rollback-turn') {
+      this.closeRunMenu();
+      await this.callbacks.onRollbackTurn?.();
+      return;
+    }
     if (action === 'toggle') {
       if (this.suppressFloatingClick) { this.suppressFloatingClick = false; return; }
       return this.toggle();
@@ -449,8 +498,7 @@ export class LivingWorldPanel {
     }
     if (action === 'map-style') {
       const current = this.mapStyleMode === 'auto' ? (this.settings.mapStyle || 'auto') : this.mapStyleMode;
-      const depth = (this.getMapScope().path || []).length;
-      const inAtlas = current === 'atlas' || (current !== 'dark' && depth > 0);
+      const inAtlas = current !== 'dark';
       this.mapStyleMode = inAtlas ? 'dark' : 'atlas';
       this.render();
       return;
@@ -473,6 +521,7 @@ export class LivingWorldPanel {
     }
     if (action === 'initialize' && this.world && !window.confirm('重新初始化会替换当前聊天的世界。建议先导出存档，是否继续？')) return;
     if (action === 'reset' && !window.confirm('确定清除当前聊天的世界、骰点和检查点吗？此操作不可撤销。')) return;
+    this.closeRunMenu();
     const callback = {
       initialize: this.callbacks.onInitialize,
       evolve: this.callbacks.onEvolve,
@@ -947,6 +996,10 @@ export class LivingWorldPanel {
       return;
     }
     if (event.key === 'Escape' && this.opened) {
+      if (this.runMenuOpen) {
+        this.closeRunMenu();
+        return;
+      }
       if (this.selectedNpcId) {
         this.selectedNpcId = null;
         this.renderInspector();

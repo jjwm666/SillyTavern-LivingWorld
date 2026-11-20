@@ -15,6 +15,22 @@ const DEFAULT_GUIDE = [
   '节令与日常是生活质感，不是任务清单：让它们出现在对话的空隙、街上的气味与旁人的闲谈里，而不是单独列出来。',
 ];
 
+/**
+ * 取当前聊天的消息数组。不同酒馆版本把记录放在不同位置
+ * （context.chat / context.chatMessages / 全局 SillyTavern.chat），
+ * 这里统一成一份数组，读不到才退回空数组，避免整条链路以为「没有正文」。
+ */
+export function readChat(context) {
+  const sources = [context?.chat, context?.chatMessages, context?.chat_history, globalThis.SillyTavern?.chat];
+  for (const source of sources) {
+    if (Array.isArray(source) && source.length) return source;
+  }
+  for (const source of sources) {
+    if (source && typeof source === 'object' && Array.isArray(source.messages)) return source.messages;
+  }
+  return [];
+}
+
 export function extractRecentConversation(chat, maxMessages = 10, maxChars = 14000) {
   const history = asArray(chat).filter((message) => message && !message.is_system && !message.isSystem);
   const tail = history.slice(-maxMessages);

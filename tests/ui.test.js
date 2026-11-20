@@ -158,7 +158,7 @@ test('悬浮球改为白色主题球，图标与手柄随尺寸等比缩放', as
   assert.ok(css.includes('.lw-floating-orbit { inset: -10%; }'), '光环应随球体等比缩放');
 });
 
-test('次级地图自动切换成极简单色制图，并可手动切回深色星图', () => {
+test('地图默认就是极简单色制图，可手动切回深色星图', () => {
   const world = createDemoWorld();
   const harbor = world.regions.find((region) => region.id === 'region_harbor');
   const child = harbor.children[0];
@@ -169,12 +169,17 @@ test('次级地图自动切换成极简单色制图，并可手动切回深色�
   assert.ok(atlas.includes('data-lw-action="map-style"'), '应提供风格切换按钮');
   assert.ok(atlas.includes('极简制图'));
 
+  // 世界层同样是地图，不再是圆点星图
   const root = renderMap(world, world.regions[0].id, {}, {}, 'auto');
-  assert.ok(!root.includes('lw-map-atlas'), '世界层默认仍是深色星图');
-  assert.ok(root.includes('深色星图'));
+  assert.ok(root.includes('lw-map-atlas'), '世界层默认也是极简制图');
+  assert.ok(root.includes('lw-atlas-district'), '区域应画成地块轮廓而不是圆点');
+  assert.ok(root.includes('lw-atlas-name'), '地块上要有地名标注');
+  assert.ok(!root.includes('lw-map-node-core'), '不应再渲染圆点节点');
 
-  const forced = renderMap(world, world.regions[0].id, {}, {}, 'atlas');
-  assert.ok(forced.includes('lw-map-atlas'), '可以强制任意层级用极简制图');
+  const forcedDark = renderMap(world, world.regions[0].id, {}, {}, 'dark');
+  assert.ok(!forcedDark.includes('lw-map-atlas'), '可以强制切回深色星图');
+  assert.ok(forcedDark.includes('lw-map-node-core'));
+  assert.ok(forcedDark.includes('深色星图'));
 });
 
 test('三张关系图的连线带颜色与粗细，不再是一律细线', () => {
@@ -193,7 +198,9 @@ test('三张关系图的连线带颜色与粗细，不再是一律细线', () =>
   assert.ok(/stroke-width:(\d+\.)?\d+px/.test(people));
 
   const map = renderMap(world, world.regions[0].id, {}, {});
-  assert.ok(/lw-map-route[\s\S]{0,200}style="stroke-width:/.test(map) || map.includes('lw-map-route'), '地图路线带分级粗细');
+  assert.ok(map.includes('lw-atlas-connect'), '地图路线用道路连线');
+  const darkMap = renderMap(world, world.regions[0].id, {}, {}, 'dark');
+  assert.ok(/lw-map-route[\s\S]{0,200}style="stroke-width:/.test(darkMap), '深色星图的路线带分级粗细');
 });
 
 test('拉取到的模型就地展开成可选列表，不重载设置表单', () => {
