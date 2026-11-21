@@ -122,14 +122,30 @@ export class WorldAPI {
   async requestSillyTavern(prompt, { signal, systemPrompt }) {
     const context = this.getContext();
     if (!context?.generateRaw) throw new Error('当前酒馆版本不支持 generateRaw，请升级酒馆或配置独立 API');
-    const request = context.generateRaw({
-      prompt: text(prompt, 120000),
-      systemPrompt: systemPrompt || '你是结构化世界模拟意图生成器。只输出合法 JSON，不输出 Markdown。',
-      temperature: Number(this.getSettings().temperature) || 0.7,
-      maxTokens: Number(this.getSettings().maxTokens) || 12000,
-      ...(signal ? { abortController: signal } : {}),
-    });
-    return withAbort(request, signal);
+    const settings = this.getSettings();
+    // generateRaw 的 abortController 要的是 AbortController，不是 AbortSignal；
+    // 外部的取消信号要转接到自己的 controller 上，否则「取消推演」停不住底层生成。
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    // 没有超时的话，一次挂住的请求会把 prepareGeneration 一起拖死。
+    const timeout = setTimeout(
+      () => controller.abort(new Error('生成超时')),
+      Math.max(10, Number(settings.requestTimeout) || 120) * 1000,
+    );
+    try {
+      const request = context.generateRaw({
+        prompt: text(prompt, 120000),
+        systemPrompt: systemPrompt || '你是结构化世界模拟意图生成器。只输出合法 JSON，不输出 Markdown。',
+        temperature: Number(settings.temperature) || 0.7,
+        maxTokens: Number(settings.maxTokens) || 12000,
+        abortController: controller,
+      });
+      return await withAbort(request, signal);
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
+    }
   }
 
   async requestCustom(prompt, { signal, systemPrompt, json = true }) {
@@ -155,11 +171,18 @@ export class WorldAPI {
       let response = await fetch(customEndpoint(settings.customBaseUrl), {
         method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal,
       });
-      if (response.status === 400) {
-        delete body.response_format;
-        response = await fetch(customEndpoint(settings.customBaseUrl), {
-          method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal,
-        });
+      // 只有错误体明确指向 response_format / JSON 模式时才去掉它重试一次；
+      // 密钥错、模型名错也重发等于白花一次请求，还会把真正的错因盖掉。
+      if (response.status === 400 && body.response_format) {
+        const detail = await response.text().catch(() => '');
+        if (/response_format|json[ _-]?mode|json_object|不支持|unsupported|not support/i.test(detail)) {
+          delete body.response_format;
+          response = await fetch(customEndpoint(settings.customBaseUrl), {
+            method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal,
+          });
+        } else {
+          throw new Error(`API 400：${detail.slice(0, 500) || '请求被拒绝'}`);
+        }
       }
       if (!response.ok) {
         const detail = (await response.text()).slice(0, 500);

@@ -99,8 +99,8 @@ test('compression folds old rounds into tier-1 chronicle entries and is idempote
   assert.ok(tier1.length >= 1, 'twelve successful evolutions should compress one window');
   const covered = tier1[0].toRound;
   assert.ok(covered > 0);
-  // 被压缩的轮次不再堆在 logs 里
-  assert.ok(world.logs.every((log) => log.round > covered || log.round === 0));
+  // 被压缩的轮次不再堆在 logs 里；只保留非公开日志（秘密线索压缩后不能丢）
+  assert.ok(world.logs.every((log) => log.round > covered || log.round === 0 || log.public === false));
   const snapshot = JSON.stringify(world.chronicle);
   maybeCompress(world, options);
   assert.equal(JSON.stringify(world.chronicle), snapshot, 'compression must not run twice for the same evolution count');

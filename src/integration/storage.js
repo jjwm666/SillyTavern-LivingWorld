@@ -71,13 +71,25 @@ export class WorldStore {
     });
   }
 
+  /**
+   * 写 IndexedDB。put() 立即返回、事务完成才算写完，异步错误也进不了 try/catch，
+   * 所以这里等 oncomplete 再算成功，并把失败原因留给诊断面板。
+   */
   async idbSet(key, value) {
     this.memory.set(key, value);
-    if (!this.db) return;
+    if (!this.db) return false;
     try {
-      this.db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).put(value, key);
-    } catch {
-      this.memory.set(key, value);
+      await new Promise((resolve, reject) => {
+        const tx = this.db.transaction(STORE_NAME, 'readwrite');
+        tx.objectStore(STORE_NAME).put(value, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error || new Error('IndexedDB 写入失败'));
+        tx.onabort = () => reject(tx.error || new Error('IndexedDB 写入被中断'));
+      });
+      return true;
+    } catch (error) {
+      this.lastStorageError = error?.message || String(error);
+      return false;
     }
   }
 
@@ -85,7 +97,8 @@ export class WorldStore {
     const context = this.getContext();
     const metadata = context?.chatMetadata || {};
     let raw = metadata[STORAGE_KEY];
-    if (!raw) raw = await this.idbGet(`${this.chatKey()}:state`);
+    const isPointer = raw && typeof raw === 'object' && raw.pointer === true;
+    if (!raw || isPointer) raw = await this.idbGet(`${this.chatKey()}:state`);
     if (!raw) return null;
     try {
       const parsed = typeof raw === 'string' ? safeJsonParse(raw) : raw;
@@ -106,11 +119,14 @@ export class WorldStore {
   async save(state) {
     const context = this.getContext();
     const snapshot = deepClone(state);
-    if (context?.chatMetadata) {
-      context.chatMetadata[STORAGE_KEY] = snapshot;
-      await context.saveMetadata?.();
-    }
-    await this.idbSet(`${this.chatKey()}:state`, snapshot);
+    const stored = await this.idbSet(`${this.chatKey()}:state`, snapshot);
+    if (!context?.chatMetadata) return;
+    // 世界本体（含上百背景 NPC）只留在 IndexedDB，聊天元数据里放一个指针，
+    // 否则每存一次都要把整份世界写进聊天存档。IDB 写失败时才退回旧做法，避免丢档。
+    context.chatMetadata[STORAGE_KEY] = stored
+      ? { pointer: true, version: snapshot.version, round: snapshot.round, savedAt: new Date().toISOString() }
+      : snapshot;
+    await context.saveMetadata?.();
   }
 
   checkpoints() {

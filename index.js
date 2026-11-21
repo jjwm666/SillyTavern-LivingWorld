@@ -49,7 +49,8 @@ class LivingWorldController {
     this.initialized = false;
     this.chatReadWarningShown = false;
     this.loreCatalog = createLoreCatalog();
-    this.lorePromise = null;
+    this.loreTask = null;
+    this.diagnostics = [];
     this.panel = new LivingWorldPanel({
       onInitialize: () => this.initializeWorld(),
       onEvolve: () => this.world ? this.evolve({ manual: true }) : this.initializeWorld(),
@@ -92,7 +93,16 @@ class LivingWorldController {
     this.panel.setData({ settings: this.getSettings(), status: this.status });
     const { eventSource, event_types } = this.context();
     eventSource.on(event_types.GENERATION_ENDED, () => this.handleGenerationEnded());
-    eventSource.on(event_types.CHAT_CHANGED || event_types.CHAT_LOADED, () => this.loadChat());
+    // CHAT_CHANGED 与 CHAT_LOADED 都要挂：酒馆不同版本只会触发其中一个，
+    // 用 `a || b` 只会挂上先存在的那个。两次触发时靠 50ms 合并 + token 去重。
+    let reloadTimer = null;
+    const reloadChat = () => {
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => this.loadChat(), 50);
+    };
+    for (const name of ['CHAT_CHANGED', 'CHAT_LOADED']) {
+      if (event_types[name]) eventSource.on(event_types[name], reloadChat);
+    }
     eventSource.on(event_types.MESSAGE_DELETED, () => setTimeout(() => this.handleMessageDeleted(), 0));
     eventSource.on(event_types.MESSAGE_SWIPED, () => { this.generationBaseline = null; });
     await this.loadChat();
@@ -131,6 +141,8 @@ class LivingWorldController {
       this.status = { kind: 'ready', message: `旧存档已从 v${migration.from} 迁移到 v${migration.to}` };
     }
     this.panel.setData({ world: this.world, settings: this.getSettings(), status: this.status });
+    this.panel.setDiagnostics?.(this.diagnostics);
+    if (this.store.lastStorageError) this.recordDiagnostic('storage', this.store.lastStorageError);
     this.refreshInjection();
     // 世界书条目是异步的（可能要向后端按名字取），先注入现有内容，读完再补一次。
     this.loadLore().then(() => this.refreshInjection()).catch(() => {});
@@ -140,6 +152,16 @@ class LivingWorldController {
   setStatus(kind, message) {
     this.status = { kind, message };
     this.panel.setStatus(this.status);
+    if (kind === 'error') this.recordDiagnostic('error', message);
+  }
+
+  /** 最近 20 条错误与异常来源，设置页的「运行诊断」直接读它。 */
+  recordDiagnostic(kind, message) {
+    this.diagnostics = [
+      { kind, message: String(message || '').slice(0, 300), at: Date.now() },
+      ...this.diagnostics,
+    ].slice(0, 20);
+    this.panel?.setDiagnostics?.(this.diagnostics);
   }
 
   announce(message, tone = 'info') {
@@ -185,10 +207,15 @@ class LivingWorldController {
     if (!context.setExtensionPrompt) return;
     const settings = this.getSettings();
     const depth = Math.max(0, Math.min(8, Number(settings.injectDepth) || 0));
+    // 预算同时看字符和 token：字符上限防止一次塞爆上下文，token 上限让人能按
+    // 主模型的实际上下文来表达（中文按 1 token ≈ 1.6 字折算）。
+    const tokenBudget = Math.max(200, Math.min(32000, Number(settings.injectMaxTokens) || 2600));
+    const charBudget = Math.max(500, Math.min(40000, Number(settings.injectMaxChars) || 9000));
+    const maxChars = Math.max(500, Math.min(charBudget, Math.round(tokenBudget * 1.6)));
     // 焦点注入依赖最近对话：正文写在哪儿，就注入哪儿。
     const conversation = extractRecentConversation(readChat(context), 6, 6000);
     const value = this.world ? buildWorldContext(this.world, {
-      maxChars: settings.injectMaxChars,
+      maxChars,
       includeSecrets: settings.includeSecrets,
       preset: settings.promptPreset,
       guide: settings.injectGuide !== false,
@@ -212,9 +239,12 @@ class LivingWorldController {
 
   /** 读「角色卡书 + 全局书 + 额外添加的书」，读完通知面板刷新条目列表。 */
   async loadLore() {
-    if (this.lorePromise) return this.lorePromise;
     const token = this.chatToken;
-    this.lorePromise = (async () => {
+    // promise 必须和聊天 token 绑在一起：切到新聊天时，上一聊天在飞的请求
+    // 会被直接返回（内部 token 不符只剩旧目录），导致新聊天的书永远读不到。
+    if (this.loreTask && this.loreTask.token === token) return this.loreTask.promise;
+    let promise;
+    promise = (async () => {
       try {
         const catalog = await loadLoreCatalog(this.context(), this.getSettings());
         if (token !== this.chatToken) return this.loreCatalog;
@@ -222,13 +252,15 @@ class LivingWorldController {
         this.panel.setLoreCatalog(catalog);
         return catalog;
       } catch (error) {
+        this.recordDiagnostic('lore', error.message);
         this.panel.notify(`读取世界书失败：${error.message}`, 'error');
         return this.loreCatalog;
       } finally {
-        this.lorePromise = null;
+        if (this.loreTask?.promise === promise) this.loreTask = null;
       }
     })();
-    return this.lorePromise;
+    this.loreTask = { token, promise };
+    return promise;
   }
 
   /** 用接入的 API 生成新的日常 / 节庆提示词，交给面板填进编辑框。 */
@@ -332,7 +364,13 @@ class LivingWorldController {
     rememberChat(chat);
     if (type === 'quiet') return;
     if (this.evolutionPromise) {
-      try { await this.evolutionPromise; } catch { /* 状态栏已显示错误 */ }
+      // 后台推演可能卡在 API 上很久；最多等 1.5 秒，别让正文回复跟着一起等。
+      try {
+        await Promise.race([
+          this.evolutionPromise.catch(() => null),
+          new Promise((resolve) => setTimeout(resolve, 1500)),
+        ]);
+      } catch { /* 状态栏已显示错误 */ }
     }
     const chatMessages = readChat(this.context());
     let baseline = selectBaseline(this.store.checkpoints(), chatMessages);
@@ -357,6 +395,12 @@ class LivingWorldController {
     if (!settings.autoEvolve || this.generationBaseline?.type === 'continue') return;
     const context = this.context();
     const chat = readChat(context);
+    // DOM 兜底拿到的是渲染出来的子集，楼层号会跟真实聊天错位：
+    // 宁可不写检查点，也不要写一个回退时会把世界带到别处的楼层。
+    if (lastChatSource() === 'dom') {
+      this.recordDiagnostic('chat', '当前聊天记录只从 DOM 读到，跳过本轮检查点以避免楼层错位');
+      return;
+    }
     const last = chat.at(-1);
     if (!last || last.is_user) return;
     const messageIndex = chat.length - 1;
@@ -374,7 +418,9 @@ class LivingWorldController {
     const pendingTurns = Math.max(baseline.pendingTurns || 0, this.world?.pendingTurns || 0) + 1;
     baseline.pendingTurns = pendingTurns;
     if (pendingTurns < interval) {
-      this.world = deepClone(baseline);
+      // 用当前世界而不是生成前的快照：生成这段时间里用户可能在面板上改过字段。
+      this.world = this.world ? this.world : deepClone(baseline);
+      this.world.pendingTurns = pendingTurns;
       await this.store.save(this.world);
       this.setStatus('ready', `已记录第 ${pendingTurns}/${interval} 次回复，达到设定次数后自动推演`);
       this.panel.setData({ world: this.world, settings, status: this.status });
@@ -406,20 +452,25 @@ class LivingWorldController {
         warning = `API 未完成，本轮使用本地意图：${error.message}`;
       }
       if (token !== this.chatToken || chatKey !== this.store.chatKey()) return null;
-      const existing = Number.isInteger(messageIndex)
-        ? this.store.checkpoints().find((checkpoint) => checkpoint.messageIndex === messageIndex)
+      // 手动推进没有 messageIndex，用当前末条消息补上：否则手动推演不留检查点，
+      // 顶栏的「重 roll 本轮」会退到上一次自动推演的位置。
+      const index = Number.isInteger(messageIndex)
+        ? messageIndex
+        : readChat(this.context()).length - 1;
+      const existing = Number.isInteger(index)
+        ? this.store.checkpoints().find((checkpoint) => checkpoint.messageIndex === index)
         : null;
       // 同一层消息被重新生成（swipe）时，轮次号不变、种子不变，结果会一模一样；
       // 所以这里把重掷序数拌进种子，让重新生成真的能换一种走法。
       const reroll = existing ? (Number(existing.rerollCount) || 0) + 1 : 0;
       const world = evolveWorld(before, proposal, { ...this.getSettings(), reroll });
       world.lastEvolution.turnKey = turnKey || `manual_${Date.now()}`;
-      world.lastEvolution.messageIndex = Number.isInteger(messageIndex) ? messageIndex : readChat(this.context()).length - 1;
+      world.lastEvolution.messageIndex = Number.isInteger(index) ? index : readChat(this.context()).length - 1;
       world.lastEvolution.manual = Boolean(manual);
       this.world = world;
       await this.store.save(world);
-      if (!manual && Number.isInteger(messageIndex)) {
-        await this.store.saveCheckpoint(messageIndex, turnKey, before, world, { proposal, rerollCount: reroll });
+      if (Number.isInteger(index) && index >= 0 && lastChatSource() !== 'dom') {
+        await this.store.saveCheckpoint(index, world.lastEvolution.turnKey, before, world, { proposal, rerollCount: reroll });
       }
       this.setStatus(warning ? 'error' : 'ready', warning || `第 ${world.round} 轮完成：${world.lastEvolution.diceRolls} 次判定`);
       this.panel.setData({ world, settings: this.getSettings(), status: this.status });
@@ -496,6 +547,17 @@ class LivingWorldController {
       this.panel.notify('正在推演中，等这一轮结束再重掷', 'error');
       return null;
     }
+    // 占住推演闸门：快速连点不会并发改世界、并发写检查点。
+    const task = this.performReroll(mode);
+    this.evolutionPromise = task;
+    try {
+      return await task;
+    } finally {
+      if (this.evolutionPromise === task) this.evolutionPromise = null;
+    }
+  }
+
+  async performReroll(mode = 'dice') {
     const checkpoint = this.store.latestCheckpoint();
     if (!checkpoint?.before) {
       this.panel.notify('没有找到这一轮之前的存档，无法重掷', 'error');
@@ -547,6 +609,16 @@ class LivingWorldController {
       this.panel.notify('正在推演中，先等它结束', 'error');
       return null;
     }
+    const task = this.performDiscardEvolution();
+    this.evolutionPromise = task;
+    try {
+      return await task;
+    } finally {
+      if (this.evolutionPromise === task) this.evolutionPromise = null;
+    }
+  }
+
+  async performDiscardEvolution() {
     const checkpoint = this.store.latestCheckpoint();
     if (!checkpoint?.before) {
       this.panel.notify('没有可以撤销的推演', 'error');
@@ -573,6 +645,16 @@ class LivingWorldController {
       this.panel.notify('正在推演中，先等它结束', 'error');
       return null;
     }
+    const task = this.performRollbackTurn();
+    this.evolutionPromise = task;
+    try {
+      return await task;
+    } finally {
+      if (this.evolutionPromise === task) this.evolutionPromise = null;
+    }
+  }
+
+  async performRollbackTurn() {
     const list = this.store.checkpoints();
     if (list.length < 2) {
       this.panel.notify('没有更早的一轮可以回退', 'error');

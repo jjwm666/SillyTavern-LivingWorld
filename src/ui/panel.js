@@ -8,6 +8,15 @@ import {
   renderLore, renderNpcInspector, renderOverview, renderPeople, renderPlayer, renderSettings,
 } from './views.js';
 
+/** 表单数值统一钳制：清空输入框不该把 0 存进设置里。 */
+function clampNumber(raw, fallback, min, max) {
+  const value = Number(raw);
+  const usable = raw !== '' && raw !== null && raw !== undefined && Number.isFinite(value);
+  const base = usable ? value : Number(fallback);
+  const safe = Number.isFinite(base) ? base : min;
+  return Math.max(min, Math.min(max, safe));
+}
+
 const tabs = [
   ['overview', '总览', 'globe'],
   ['player', '生涯', 'target'],
@@ -168,7 +177,7 @@ export class LivingWorldPanel {
         case 'factions': content.innerHTML = renderFactions(this.world, this.selectedFactionId, this.viewStates.factions); break;
         case 'events': content.innerHTML = renderEvents(this.world); break;
         case 'dice': content.innerHTML = renderDice(this.world, this.diceFilter); break;
-        case 'settings': content.innerHTML = renderSettings(this.settings, this.status, this.world, this.models); break;
+        case 'settings': content.innerHTML = renderSettings(this.settings, this.status, this.world, this.models, this.diagnostics); break;
         default: content.innerHTML = renderOverview(this.world);
       }
     }
@@ -213,6 +222,11 @@ export class LivingWorldPanel {
     this.folds.set(node.dataset.foldKey, node.open);
   }
 
+  setDiagnostics(list) {
+    this.diagnostics = Array.isArray(list) ? list : [];
+    if (this.root && this.activeTab === 'settings') this.render();
+  }
+
   getMapScope() {
     let regions = this.world?.regions || [];
     const path = [];
@@ -223,7 +237,10 @@ export class LivingWorldPanel {
       regions = region.children || [];
     }
     this.mapPath = path.map((region) => region.id);
-    return { regions, path };
+    // 地图的随机序列必须跟着世界走：只按地区 id 播种时，所有世界的水系与海岸
+    // 会长得一模一样（顶层 id 恒为 root，等于整张图固定）。
+    const seed = this.world?.seed || this.world?.name || 'world';
+    return { regions, path, seed };
   }
 
   applyAppearance() {
@@ -741,7 +758,8 @@ export class LivingWorldPanel {
       jailbreakPrompt: String(data.get('jailbreakPrompt') || '').trim(),
       coreNpcLimit: Math.max(1, Math.min(400, Number(data.get('coreNpcLimit')) || 24)),
       briefNpcLimit: Math.max(8, Math.min(240, Number(data.get('briefNpcLimit')) || 48)),
-      injectMaxChars: Number(data.get('injectMaxChars')),
+      injectMaxChars: clampNumber(data.get('injectMaxChars'), this.settings.injectMaxChars, 500, 40000),
+      injectMaxTokens: clampNumber(data.get('injectMaxTokens'), this.settings.injectMaxTokens, 200, 32000),
       injectDepth: Math.max(0, Math.min(8, Number(data.get('injectDepth')) || 0)),
       injectGuide: data.has('injectGuide'),
       injectGuideText: String(data.get('injectGuideText') || '').trim(),
@@ -756,8 +774,8 @@ export class LivingWorldPanel {
       compressTier2Every: Math.max(2, Math.min(20, Number(data.get('compressTier2Every')) || 5)),
       compressTier3Every: Math.max(2, Math.min(20, Number(data.get('compressTier3Every')) || 5)),
       compressKeepRounds: Math.max(0, Math.min(40, Number(data.get('compressKeepRounds')) || 4)),
-      maxTokens: Number(data.get('maxTokens')),
-      requestTimeout: Number(data.get('requestTimeout')),
+      maxTokens: clampNumber(data.get('maxTokens'), this.settings.maxTokens, 1000, 64000),
+      requestTimeout: clampNumber(data.get('requestTimeout'), this.settings.requestTimeout, 10, 600),
     };
     this.settings = { ...this.settings, ...settings };
     await this.callbacks.onSettingsChange?.(settings);
@@ -1042,8 +1060,16 @@ export class LivingWorldPanel {
 
   /** 点一下就改：把被点的文字原地换成输入框，回车/失焦保存，Esc 取消。 */
   beginInlineEdit(node) {
-    const spec = parseEditSpec(node.dataset.lwEdit);
-    if (!spec) return;
+    // 优先读拆开的四个 data 属性：id 里带冒号（如 npc:1）也不会解析错位。
+    const spec = node.dataset.lwKind
+      ? {
+        kind: node.dataset.lwKind,
+        id: node.dataset.lwId,
+        path: node.dataset.lwPath,
+        type: node.dataset.lwType || 'text',
+      }
+      : parseEditSpec(node.dataset.lwEdit);
+    if (!spec || !spec.kind || !spec.id || !spec.path) return;
     if (node.classList.contains('is-editing')) {
       node.querySelector('input, textarea')?.focus();
       return;

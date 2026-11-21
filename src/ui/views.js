@@ -2,6 +2,7 @@ import { ACTION_LABELS, CLAN_DEMANDS, FACTION_TIERS, PROMPT_PRESETS, RELATION_DI
 import { clanStance, clanStanding, describeRelationTension } from '../engine/factions.js';
 import { byId, escapeHtml, formatNumber, hashNumber, outcomeLabel, relationLabel } from '../engine/utils.js';
 import { dailyPromptOf, festivalPromptOf, isBookInjected, selectedEntryIds } from '../integration/lore.js';
+import { parseCustomFestivals as parseFestivalLines } from '../engine/simulation.js';
 import { icon } from './icons.js';
 
 const e = escapeHtml;
@@ -46,16 +47,16 @@ function viewportTransform(view) {
   return `translate(${safe.x.toFixed(2)} ${safe.y.toFixed(2)}) scale(${safe.scale.toFixed(4)})`;
 }
 
-/** 极简 GIS 制图风格的可复现伪随机源。 */
 /**
  * 就地修改：任何包在 editable() 里的文字或数字，在面板里点一下就能改。
- * kind:id:path:type 四段交给 engine/edits.js 校验与写入，视图不碰数据。
+ * kind/id/path/type 分成四个 data 属性，id 里出现冒号也不会解析错位。
  */
 function editable(kind, id, path, text, options = {}) {
   const { type = 'text', className = '', label = '', value = null } = options;
   const valueAttr = value === null || value === undefined ? '' : ` data-lw-value="${e(String(value))}"`;
   const title = label ? `点击修改：${e(label)}` : '点击修改';
-  return `<span class="lw-editable${className ? ` ${className}` : ''}" data-lw-edit="${e(`${kind}:${id}:${path}:${type}`)}"${valueAttr} role="button" tabindex="0" title="${title}">${text}</span>`;
+  const legacy = e(`${kind}:${id}:${path}:${type}`);
+  return `<span class="lw-editable${className ? ` ${className}` : ''}" data-lw-edit="${legacy}" data-lw-kind="${e(kind)}" data-lw-id="${e(id)}" data-lw-path="${e(path)}" data-lw-type="${e(type)}"${valueAttr} role="button" tabindex="0" title="${title}">${text}</span>`;
 }
 
 function mulberry32(seed) {
@@ -575,7 +576,9 @@ export function renderMap(world, selectedRegionId, view = {}, scope = {}, styleM
       ${childCount ? `<text class="lw-map-node-children" x="${region.x + 24}" y="${region.y - 20}" text-anchor="middle">+${childCount}</text>` : ''}
     </g>`;
   }).join('');
-  const fabric = atlas ? atlasLayer(regions, parent?.id || scope.seed || 'world', path.length) : null;
+  const fabric = atlas
+    ? atlasLayer(regions, `${scope.seed || world.seed || world.name || 'world'}:${parent?.id || 'root'}`, path.length)
+    : null;
   const styleButton = `<button class="lw-map-style-button" data-lw-action="map-style" title="切换地图绘制风格">${icon('map', 13)}${atlas ? '极简制图' : '深色星图'}</button>`;
   const breadcrumbs = `<nav class="lw-map-breadcrumbs" aria-label="地图层级"><button data-lw-action="map-root">世界</button>${path.map((region, index) => `<span>/</span><button data-lw-action="map-path" data-depth="${index}" class="${index === path.length - 1 ? 'current' : ''}">${e(region.name)}</button>`).join('')}${styleButton}</nav>`;
   return `<section class="lw-map-view lw-view-enter">${sectionHeading('GEOGRAPHY IS DESTINY', parent ? `${parent.name} · 次级地图` : '世界地图', zoomBar('map', mapView.scale))}
@@ -759,22 +762,9 @@ function festivalSortKey(festival) {
   return (Number(festival.month) || 1) * 100 + (Number(festival.day) || 1);
 }
 
+/** 与引擎共用同一个解析器：界面显示得出来的节庆，结算时一定也会触发。 */
 function parseCustomFestivals(raw) {
-  return String(raw || '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [name, date, description] = line.split('|').map((part) => (part || '').trim());
-      const match = /(\d{1,2})\s*[-月./]\s*(\d{1,2})/.exec(date || '');
-      return {
-        name: name || line,
-        month: match ? Number(match[1]) : null,
-        day: match ? Number(match[2]) : null,
-        description: description || '',
-        origin: 'custom',
-      };
-    });
+  return parseFestivalLines(raw);
 }
 
 /** 「世界书 · 日常与节庆」：条目级世界书注入 + 日常/节庆提示词 + 由接入 API 生成新项目。 */
@@ -869,7 +859,7 @@ export function renderLore(world, settings = {}, catalog = { books: [] }, status
   </section>`;
 }
 
-export function renderSettings(settings, status, world, models = []) {
+export function renderSettings(settings, status, world, models = [], diagnostics = []) {
   const custom = settings.connectionMode === 'custom';
   const customPresets = Array.isArray(settings.customPromptPresets) ? settings.customPromptPresets : [];
   const presetOptions = [
@@ -883,9 +873,12 @@ export function renderSettings(settings, status, world, models = []) {
       <details class="lw-fold lw-settings-section lw-prompt-section" data-fold-key="设置·提示词与自定义预设"><summary><h3>提示词与自定义预设</h3></summary><div class="lw-fold-body"><div class="lw-preset-row"><label>世界预设<select name="promptPreset">${presetOptions.map((preset) => `<option value="${e(preset.id)}" ${settings.promptPreset === preset.id ? 'selected' : ''}>${e(preset.name)}</option>`).join('')}</select></label><button type="button" class="lw-button" data-lw-action="apply-prompt-preset">载入预设</button><button type="button" class="lw-button" data-lw-action="delete-prompt-preset">删除自定义预设</button></div><div class="lw-preset-save"><input name="newPromptPresetName" maxlength="60" placeholder="新预设名称"><button type="button" class="lw-button" data-lw-action="save-prompt-preset">${icon('plus')}将当前内容另存为预设</button></div><div class="lw-prompt-grid"><label>初始化提示词<textarea name="bootstrapPrompt" rows="4" maxlength="6000" placeholder="控制地图、人物、势力和题材如何生成">${e(settings.bootstrapPrompt)}</textarea></label><label>每轮推演提示词<textarea name="evolutionPrompt" rows="4" maxlength="6000" placeholder="控制 NPC 行动偏好、事件密度和世界演化方向">${e(settings.evolutionPrompt)}</textarea></label><label class="lw-prompt-wide">自定义破限词<textarea name="jailbreakPrompt" rows="3" maxlength="6000" placeholder="填写需要同时附加到初始化与推演请求的自定义创作指令">${e(settings.jailbreakPrompt)}</textarea></label></div><p class="lw-field-help">自定义预设保存初始化、推演和破限词三项内容，只发送给后台世界模型，不修改酒馆全局预设或聊天记录。</p></div></details>
       <details class="lw-fold lw-settings-section" data-fold-key="设置·后台 API"><summary><h3>后台 API</h3></summary><div class="lw-fold-body"><div class="lw-segmented"><label><input type="radio" name="connectionMode" value="st" ${!custom ? 'checked' : ''}><span>酒馆当前连接</span></label><label><input type="radio" name="connectionMode" value="custom" ${custom ? 'checked' : ''}><span>独立兼容接口</span></label></div><div class="lw-custom-api ${custom ? '' : 'muted'}"><label>Base URL<input name="customBaseUrl" value="${e(settings.customBaseUrl)}" placeholder="https://provider.example/v1" autocomplete="off"></label><label>API Key<input type="password" name="customApiKey" value="${e(settings.customApiKey)}" placeholder="不会写入世界存档" autocomplete="off"></label><label>模型名<input name="customModel" list="lw-model-list" value="${e(settings.customModel)}" placeholder="model-name" autocomplete="off"></label><datalist id="lw-model-list">${models.map((id) => `<option value="${e(id)}"></option>`).join('')}</datalist><div class="lw-model-picker" data-lw-model-picker><div class="lw-model-picker-head"><span>可选模型</span><em data-lw-model-count>${models.length ? `${models.length} 个` : '尚未拉取'}</em></div><div class="lw-model-picker-list" data-lw-model-list>${models.length ? models.map((id) => `<button type="button" class="lw-model-chip" data-lw-action="pick-model" data-model="${e(id)}">${e(id)}</button>`).join('') : '<small>点右侧“拉取模型列表”，结果会直接展开在下面，不会重载面板。</small>'}</div></div><div class="lw-custom-api-actions"><button type="button" class="lw-button" data-lw-action="fetch-models">${icon('refresh')}拉取模型列表</button><button type="button" class="lw-button" data-lw-action="test-api">${icon('check')}测试连接</button></div></div><p class="lw-field-help">Base URL 填到 /v1 或完整 /chat/completions。“拉取模型列表”会请求 /models 验证连通性并填入模型名下拉框；“测试连接”会真实生成一次 JSON 验证推演链路。酒馆连接模式使用 generateRaw 后台调用，模型跟随酒馆主 API。</p></div></details>
       <details class="lw-fold lw-settings-section lw-focus-section" data-fold-key="设置·派系、风声与相关性注入"><summary><h3>派系、风声与相关性注入</h3></summary><div class="lw-fold-body"><label class="lw-toggle-row"><span><strong>让世界模型自造内部派系</strong><small>开启后每轮可依据角色卡与局势提出新的内部派系，而不是只用内置名单</small></span><input type="checkbox" name="aiClans" ${settings.aiClans !== false ? 'checked' : ''}><i></i></label><label class="lw-toggle-row"><span><strong>按正文焦点注入</strong><small>世界仍然全量运转，但只把玩家所在地区、正文提到的人与其势力注入主 API</small></span><input type="checkbox" name="focusInjection" ${settings.focusInjection !== false ? 'checked' : ''}><i></i></label><div class="lw-field-grid"><label>焦点人物上限<input type="number" name="focusNpcLimit" min="3" max="16" value="${settings.focusNpcLimit}"></label><label>焦点势力上限<input type="number" name="focusFactionLimit" min="2" max="10" value="${settings.focusFactionLimit}"></label></div><p class="lw-field-help">风声分四层：官方通告传得最快也最可信，区域消息基本出不了本地，小道消息真假难辨，密闻几乎不扩散。层级与传播范围由推演决定，也可以在事件面板里点开一则风声就地改写。</p></div></details>
-      <details class="lw-fold lw-settings-section" data-fold-key="设置·规模与上下文"><summary><h3>规模与上下文</h3></summary><div class="lw-fold-body"><div class="lw-field-grid"><label>核心 NPC 上限<input type="number" name="coreNpcLimit" min="1" max="400" value="${settings.coreNpcLimit}"></label><label>每轮简报人数<input type="number" name="briefNpcLimit" min="8" max="240" value="${settings.briefNpcLimit ?? 48}"></label><label>注入字符上限<input type="number" name="injectMaxChars" min="1000" max="30000" step="500" value="${settings.injectMaxChars}"></label><label>生成 Token 上限<input type="number" name="maxTokens" min="1000" max="64000" step="1000" value="${settings.maxTokens}"></label><label>请求超时（秒）<input type="number" name="requestTimeout" min="10" max="600" value="${settings.requestTimeout}"></label></div><div class="lw-field-grid"><label>压缩间隔（成功推演次数）<input type="number" name="compressEvery" min="3" max="100" value="${settings.compressEvery}"><small>达到次数后把这段轮次压成一条纪要</small></label><label>一级合并为二级<input type="number" name="compressTier2Every" min="2" max="20" value="${settings.compressTier2Every}"><small>几条一级纪要合成一条辑要</small></label><label>二级合并为三级<input type="number" name="compressTier3Every" min="2" max="20" value="${settings.compressTier3Every}"><small>几条辑要合成一条纪年</small></label><label>未压缩保留轮次<input type="number" name="compressKeepRounds" min="0" max="40" value="${settings.compressKeepRounds}"><small>最近这些轮保持原样，保证细节不丢</small></label></div><label class="lw-toggle-row"><span><strong>启用存档压缩</strong><small>只用成功推演的轮次计数，重 roll 不会推动压缩</small></span><input type="checkbox" name="compressionEnabled"${settings.compressionEnabled !== false ? ' checked' : ''}><i></i></label><p class="lw-field-help">核心 NPC 上限决定进入模拟的人物总数（最多 400）；每轮简报人数只决定这次推演请求里带多少份人物简报——正文提到的人与玩家同地的人优先，其余按轮次轮流进入，没被带上的角色仍由本地规则照常生活。因为注入只取与正文相关的地区与人物，核心层可以放心开大。压缩只处理已经写完的轮次，检查点与重 roll 逻辑不受影响。</p><p class="lw-field-help">日常、节庆与世界书条目注入已移到侧边栏的「节庆·日常」页，这里只保留规模、上下文与压缩。</p></div></details>
+      <details class="lw-fold lw-settings-section" data-fold-key="设置·规模与上下文"><summary><h3>规模与上下文</h3></summary><div class="lw-fold-body"><div class="lw-field-grid"><label>核心 NPC 上限<input type="number" name="coreNpcLimit" min="1" max="400" value="${settings.coreNpcLimit}"></label><label>每轮简报人数<input type="number" name="briefNpcLimit" min="8" max="240" value="${settings.briefNpcLimit ?? 48}"></label><label>注入字符上限<input type="number" name="injectMaxChars" min="500" max="40000" step="500" value="${settings.injectMaxChars}"></label><label>注入 token 预算<input type="number" name="injectMaxTokens" min="200" max="32000" step="200" value="${settings.injectMaxTokens ?? 2600}"><small>按主模型上下文折算，字符上限与它取更小的那个</small></label><label>生成 Token 上限<input type="number" name="maxTokens" min="1000" max="64000" step="1000" value="${settings.maxTokens}"></label><label>请求超时（秒）<input type="number" name="requestTimeout" min="10" max="600" value="${settings.requestTimeout}"></label></div><div class="lw-field-grid"><label>压缩间隔（成功推演次数）<input type="number" name="compressEvery" min="3" max="100" value="${settings.compressEvery}"><small>达到次数后把这段轮次压成一条纪要</small></label><label>一级合并为二级<input type="number" name="compressTier2Every" min="2" max="20" value="${settings.compressTier2Every}"><small>几条一级纪要合成一条辑要</small></label><label>二级合并为三级<input type="number" name="compressTier3Every" min="2" max="20" value="${settings.compressTier3Every}"><small>几条辑要合成一条纪年</small></label><label>未压缩保留轮次<input type="number" name="compressKeepRounds" min="0" max="40" value="${settings.compressKeepRounds}"><small>最近这些轮保持原样，保证细节不丢</small></label></div><label class="lw-toggle-row"><span><strong>启用存档压缩</strong><small>只用成功推演的轮次计数，重 roll 不会推动压缩</small></span><input type="checkbox" name="compressionEnabled"${settings.compressionEnabled !== false ? ' checked' : ''}><i></i></label><p class="lw-field-help">核心 NPC 上限决定进入模拟的人物总数（最多 400）；每轮简报人数只决定这次推演请求里带多少份人物简报——正文提到的人与玩家同地的人优先，其余按轮次轮流进入，没被带上的角色仍由本地规则照常生活。因为注入只取与正文相关的地区与人物，核心层可以放心开大。压缩只处理已经写完的轮次，检查点与重 roll 逻辑不受影响。</p><p class="lw-field-help">日常、节庆与世界书条目注入已移到侧边栏的「节庆·日常」页，这里只保留规模、上下文与压缩。</p></div></details>
       <details class="lw-fold lw-settings-section lw-inject-section" data-fold-key="设置·注入主 API 的方式"><summary><h3>注入主 API 的方式</h3></summary><div class="lw-fold-body"><div class="lw-field-grid"><label>注入深度（距最新消息条数）<input type="number" name="injectDepth" min="0" max="8" value="${settings.injectDepth}"></label><label class="lw-inline-check"><input type="checkbox" name="injectGuide" ${settings.injectGuide !== false ? 'checked' : ''}><span>附带「世界档案｜既定事实 + 写作要求」结构</span></label></div><label class="lw-prompt-wide">附加写作要求<textarea name="injectGuideText" rows="3" maxlength="2000" placeholder="例如：请在正文中体现势力之间的试探与暗流，但不要直接点明数字与派系名称">${e(settings.injectGuideText || '')}</textarea></label><p class="lw-field-help">结构开启时，注入内容会以 system 身份、用 &lt;living_world&gt; 标签包裹，并附带「当作既定事实写进正文、不复述数字」等写作要求；深度 0 表示紧贴本轮输入，主 API 最不容易忽略。若你的主模型仍然大量复述条目，把深度调到 0 并关闭「附带写作要求」试一次，再对比效果。</p></div></details>
       <details class="lw-fold lw-settings-section" data-fold-key="设置·存档与维护"><summary><h3>存档与维护</h3></summary><div class="lw-fold-body"><div class="lw-settings-actions"><button type="button" class="lw-button" data-lw-action="export">${icon('download')}导出世界</button><button type="button" class="lw-button" data-lw-action="import">${icon('upload')}导入世界</button><button type="button" class="lw-button" data-lw-action="cancel-evolve">${icon('stop')}取消后台推演</button><button type="button" class="lw-button lw-danger-button" data-lw-action="reset">${icon('alert')}重建世界</button></div><p class="lw-field-help">世界按聊天保存，设置里不再有整段 JSON 编辑器。想改内容就在概览、生涯、地图侧栏、势力面板、事件与人物名片里直接点击带下划线的文字或数字：回车保存，Esc 取消，数值会自动限制在合理范围内，改完立刻生效并同步注入。导出文件不包含 API Key。重建会清除当前聊天的世界与检查点。推演进行中可点击“取消后台推演”或面板顶部的停止按钮立即中止，本轮不会写入世界。</p></div></details>
+      <details class="lw-fold lw-settings-section" data-fold-key="设置·运行诊断"><summary><h3>运行诊断</h3></summary><div class="lw-fold-body">${diagnostics.length
+        ? `<ul class="lw-diagnostics">${diagnostics.map((item) => `<li><span class="lw-pill">${e(item.kind || 'info')}</span><span>${e(item.message || '')}</span><time>${e(new Date(item.at || Date.now()).toLocaleTimeString())}</time></li>`).join('')}</ul>`
+        : '<p class="lw-field-help">暂时没有错误记录。读取聊天、调用接口或写存档失败时，会在这里留下最近 20 条原因。</p>'}<p class="lw-field-help">这里只记录错误与异常来源，不含正文与 API Key。</p></div></details>
       <div class="lw-settings-footer"><button type="submit" class="lw-button lw-primary">${icon('check')}保存设置</button></div>
     </form>
   </section>`;

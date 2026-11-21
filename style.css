@@ -378,6 +378,14 @@
 .lw-settings-section textarea::placeholder { color: var(--lw-faint); }
 .lw-field-help { margin-top: 10px; color: var(--lw-faint); font-size: 9px; line-height: 1.7; }
 .lw-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+/* 运行诊断：最近 20 条错误与存档异常，只记类型与时间，不含正文与 Key */
+.lw-diagnostics { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.lw-diagnostics li { display: grid; grid-template-columns: 62px 1fr auto; gap: 10px; align-items: baseline; padding: 7px 10px; border: 1px solid var(--lw-line); border-radius: 7px; background: var(--lw-bg); font-size: 10px; line-height: 1.6; }
+.lw-diagnostics li .lw-pill { justify-self: start; font-size: 8.5px; letter-spacing: .12em; }
+.lw-diagnostics li span:not(.lw-pill) { color: var(--lw-text); word-break: break-word; }
+.lw-diagnostics li time { color: var(--lw-faint); font-size: 9px; white-space: nowrap; }
+.lw-diagnostics-empty { margin: 0; color: var(--lw-faint); font-size: 10px; line-height: 1.8; }
 .lw-settings-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .lw-settings-actions .lw-button { font-size: 10px; }
 .lw-settings-footer { grid-column: 1 / -1; display: flex; justify-content: flex-end; }

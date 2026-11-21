@@ -44,6 +44,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   temperature: 0.7,
   maxTokens: 12000,
   injectMaxChars: 9000,
+  injectMaxTokens: 2600,
   injectDepth: 2,
   injectGuide: true,
   injectGuideText: '',

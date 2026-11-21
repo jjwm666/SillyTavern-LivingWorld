@@ -856,13 +856,18 @@ export function parseCustomFestivals(raw) {
     const parts = trimmed.split('|').map((part) => part.trim());
     const name = parts[0];
     if (!name) continue;
-    const match = /^(\d{1,2})\s*[-\/月]\s*(\d{1,2})\s*日?$/.exec(parts[1] || '');
+    // 与面板的显示保持一致：3-15 / 3/15 / 3.15 / 3月15 / 3月15日 都认。
+    const match = /^(\d{1,2})\s*[-\/月.]\s*(\d{1,2})\s*日?$/.exec(parts[1] || '');
     if (!match) continue;
+    const month = Number(match[1]);
+    const day = Number(match[2]);
+    // 越界日期直接跳过，避免把 13 月静默夹成 12 月、把 31 日夹成 30 日。
+    if (!(month >= 1 && month <= 12) || !(day >= 1 && day <= 30)) continue;
     list.push({
-      id: `fest_custom_${hashString(`${name}:${match[1]}:${match[2]}`)}`,
+      id: `fest_custom_${hashString(`${name}:${month}:${day}`)}`,
       name: text(name, 60),
-      month: integer(Number(match[1]), 1, 1, 12),
-      day: integer(Number(match[2]), 1, 1, 30),
+      month,
+      day,
       description: text(parts.slice(2).join('|'), 300),
       origin: 'custom',
       active: true,

@@ -61,8 +61,16 @@ export function compressRoundWindow(state, fromRound, toRound) {
     entries: entries.slice(0, 12),
     createdAt: new Date().toISOString(),
   };
+  // 非公开日志不进公开纪要，但它们是暗线的唯一记录：压进 entry.secrets 后原文保留，
+  // 否则几轮之后「谁在私下做什么」就彻底查不到了。
+  const secrets = state.logs
+    .filter((log) => log.round >= fromRound && log.round <= toRound && log.public === false)
+    .map((log) => text(log.title, 120))
+    .filter(Boolean)
+    .slice(0, 12);
+  if (secrets.length) entry.secrets = secrets;
   state.chronicle.push(entry);
-  state.logs = state.logs.filter((log) => log.round < fromRound || log.round > toRound);
+  state.logs = state.logs.filter((log) => log.public === false || log.round < fromRound || log.round > toRound);
   return entry;
 }
 

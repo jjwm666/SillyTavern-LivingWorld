@@ -83,19 +83,19 @@ function readDomChat() {
 export function readChat(context) {
   const dynamic = typeof context?.getChat === 'function' ? context.getChat() : null;
   const sources = [
-    context?.chat,
-    chatSnapshot,
-    dynamic,
-    context?.chatMessages,
-    context?.chat_history,
-    context?.messages,
-    globalThis.SillyTavern?.chat,
-    globalThis.chat,
+    ['context', context?.chat],
+    ['snapshot', chatSnapshot],
+    ['context', dynamic],
+    ['context', context?.chatMessages],
+    ['context', context?.chat_history],
+    ['context', context?.messages],
+    ['window', globalThis.SillyTavern?.chat],
+    ['window', globalThis.chat],
   ];
-  for (const source of sources) {
+  for (const [label, source] of sources) {
     const list = normalizeChat(source);
     if (list && list.length) {
-      chatSource = 'context';
+      chatSource = label;
       return list;
     }
   }

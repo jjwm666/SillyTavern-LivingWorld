@@ -14,7 +14,14 @@ export function text(value, maxLength = 500, fallback = '') {
 }
 
 export function deepClone(value) {
-  if (typeof structuredClone === 'function') return structuredClone(value);
+  if (value === undefined) return undefined;
+  if (typeof structuredClone === 'function') {
+    try {
+      return structuredClone(value);
+    } catch {
+      // Proxy、函数等无法结构化克隆时退回 JSON 深拷贝
+    }
+  }
   return JSON.parse(JSON.stringify(value));
 }
 
@@ -54,8 +61,30 @@ export function stableId(prefix, label, index = 0) {
   return `${prefix}_${hashString(`${label}:${index}`)}`;
 }
 
+/**
+ * 按 id 取对象。核心 NPC 上限可到 400、事件与风声上百，每轮要查几十次，
+ * 线性 find 在大世界里很贵；这里按数组缓存一份 id → 对象的索引。
+ * 数组长度变化（增删）时重建，长度不变的就地改写不影响索引。
+ */
+const idIndexCache = new WeakMap();
+
 export function byId(collection, id) {
-  return asArray(collection).find((item) => item.id === id) || null;
+  const list = asArray(collection);
+  if (!list.length) return null;
+  let cached = idIndexCache.get(list);
+  if (!cached || cached.length !== list.length) {
+    const map = new Map();
+    for (const item of list) {
+      if (item && item.id !== undefined && !map.has(item.id)) map.set(item.id, item);
+    }
+    cached = { length: list.length, map };
+    idIndexCache.set(list, cached);
+  }
+  const hit = cached.map.get(id);
+  if (hit) return hit;
+  const found = list.find((item) => item && item.id === id) || null;
+  if (found) idIndexCache.delete(list);
+  return found;
 }
 
 export function escapeHtml(value) {
